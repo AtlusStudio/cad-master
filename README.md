@@ -7,9 +7,7 @@ Python 3.11+ / ezdxf。程序从二维 DXF 或 DWG 中自动恢复双线墙中�
 在项目根目录执行：
 
 ```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+uv sync
 brew install libredwg
 ```
 
@@ -36,7 +34,7 @@ CAD_AI_MODEL="..."
 然后在项目根目录运行：
 
 ```bash
-python -m src.main
+uv run main.py
 ```
 
 AI 只接收程序提取的图层、图块、附近文字和精确几何摘要，不直接生成或修改 CAD 坐标。除原有产物外，AI 模式还会输出 `output/ai_recognition.json` 和作为权威识别数据的 `output/detected_model.json`。置信度低于 `0.85` 的对象仍继续计算，并绘制在 `CALCULATED_LOW_CONFIDENCE` 图层供后续复核。
@@ -46,7 +44,7 @@ AI 只接收程序提取的图层、图块、附近文字和精确几何摘要�
 需要完全沿用原有颜色和几何规则、不调用 AI 时使用：
 
 ```bash
-python -m src.main --local-recognition
+uv run main.py --local-recognition
 ```
 
 默认 AI 模式缺少上述环境变量时会明确报错，不会自动回退到本地识别。
@@ -56,7 +54,7 @@ AI 不直接读取 CAD 图像，也不自行创建墙体坐标；它只对程序
 ### 本地识别参数
 
 ```bash
-python -m src.main --local-recognition
+uv run main.py --local-recognition
 ```
 
 `--input` 默认读取 `input/source.dwg`，`--output` 默认写入 `output/panel_layout_result.dxf`，`--materials` 默认读取 `input/materials.json`；需要使用其他路径时再显式传入。
@@ -64,7 +62,7 @@ python -m src.main --local-recognition
 识别不依赖图层名称，只读取可见实体，并按颜色和双线墙厚筛选：
 
 ```bash
-python -m src.main \
+uv run main.py \
   --local-recognition \
   --input input/source.dxf \
   --materials input/materials.json \
