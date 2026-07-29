@@ -12,6 +12,7 @@ from .ai_recognizer import (
     build_recognition_input,
     request_recognition,
 )
+from .ceiling_layout import calculate_ceiling_layout, draw_ceiling_layout
 from .config import DEFAULT_CONFIG, MaterialConfig
 from .dxf_reader import ensure_panel_layers, read_dxf, save_detected_walls, save_dxf
 from .material_report import write_schedule
@@ -123,7 +124,9 @@ def run(
     wall_thickness_tolerance: float = DEFAULT_CONFIG.wall_thickness_tolerance,
 ) -> None:
     load_env()
-    if Path(input_path).resolve() == Path(output_path).resolve():
+    output = Path(output_path)
+    ceiling_output = output.parent / "ceiling_panel_layout_result.dxf"
+    if Path(input_path).resolve() in {output.resolve(), ceiling_output.resolve()}:
         raise ValueError("输出 DXF 不能覆盖原始文件")
 
     materials = load_materials(materials_path)
@@ -144,10 +147,14 @@ def run(
         wall_thickness_tolerance=wall_thickness_tolerance,
         junction_reserve=junction_reserve,
     )
-    total_steps = 4 if local_recognition else 6
+    total_steps = 5 if local_recognition else 7
     print(f"[1/{total_steps}] 读取 CAD 图纸...", flush=True)
     doc = read_dxf(input_path)
-    output = Path(output_path)
+    ceiling_source = (
+        Path(input_path).with_suffix(".dxf")
+        if Path(input_path).suffix.lower() == ".dwg"
+        else Path(input_path)
+    )
     print(f"[2/{total_steps}] 提取墙体候选...", flush=True)
     candidates = detect_walls(doc, drawing_config, include_all_colors=not local_recognition)
     if not candidates.walls:
@@ -179,12 +186,12 @@ def run(
             )
         recognition_input = build_recognition_input(doc, candidates)
         print(
-            f"[3/6] 请求 AI 识别（{model}，墙段 {len(recognition_input['walls'])}，"
+            f"[3/{total_steps}] 请求 AI 识别（{model}，墙段 {len(recognition_input['walls'])}，"
             f"洞口 {len(recognition_input['openings'])}）...",
             flush=True,
         )
         decisions = request_recognition(recognition_input, base_url, api_key, model)
-        print("[4/6] 校验并保存 AI 识别结果...", flush=True)
+        print(f"[4/{total_steps}] 校验并保存 AI 识别结果...", flush=True)
         output.parent.mkdir(parents=True, exist_ok=True)
         (output.parent / "ai_recognition.json").write_text(
             json.dumps(decisions, ensure_ascii=False, indent=2),
@@ -215,12 +222,22 @@ def run(
         draw_wall_layout(doc, wall, panels, obstacles)
         all_panels.extend(panels)
 
-    print(f"[{draw_step + 1}/{total_steps}] 写入 DXF 和材料清单...", flush=True)
+    print(f"[{draw_step + 1}/{total_steps}] 计算并绘制吊顶排版...", flush=True)
+    ceiling_doc = read_dxf(ceiling_source)
+    ceiling_layout = calculate_ceiling_layout(
+        detected.walls,
+        drawing_config.junction_reserve,
+    )
+    draw_ceiling_layout(ceiling_doc, ceiling_layout)
+
+    print(f"[{draw_step + 2}/{total_steps}] 写入 DXF 和材料清单...", flush=True)
     save_dxf(doc, output)
+    save_dxf(ceiling_doc, ceiling_output)
     write_schedule(all_panels, output.parent)
     thicknesses = ", ".join(f"{width}mm×{count}" for width, count in detected.thickness_counts)
     print(
-        f"已输出: {output}、{detected_walls_output}（候选墙面 {detected.face_count}，"
+        f"已输出: {output}、{ceiling_output}、{detected_walls_output}"
+        f"（候选墙面 {detected.face_count}，"
         f"墙段 {len(detected.walls)}，"
         f"墙厚 {thicknesses or '无'}，"
         f"跳过曲线段 {detected.skipped_curves}）"

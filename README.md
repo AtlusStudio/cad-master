@@ -78,6 +78,7 @@ uv run main.py \
 输出：
 
 - `output/panel_layout_result.dxf`
+- `output/ceiling_panel_layout_result.dxf`（最外层墙面围成区域的吊顶彩钢板排版）
 - `output/detected_walls.dxf`（完整展示所有参与计算的墙面；绿色为连续计算范围，黄色为门洞，青色为窗洞）
 - `output/detected_model.json`（AI 模式的权威识别数据，包含全部候选、决定、置信度和依据）
 - `output/ai_recognition.json`（AI 模式的原始结构化决定，后续人工复核可复用）
