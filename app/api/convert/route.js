@@ -73,13 +73,120 @@ function streamStages(stages, args, done) {
 }
 
 async function confirmConversion(request) {
-  const { action, job } = await request.json()
+  const { action, job, edits } = await request.json()
   if (action !== "confirm" || !JOB_PATTERN.test(job)) {
     return Response.json({ error: "确认请求无效。" }, { status: 400 })
   }
 
   const directory = path.join(process.cwd(), "output", "gui", job)
   const meta = JSON.parse(await readFile(path.join(directory, "conversion_request.json"), "utf8"))
+  const checkpointPath = path.join(directory, "conversion_checkpoint.json")
+  const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"))
+  const candidates = checkpoint.candidates.walls
+  const wallIds = new Set(candidates.map((wall) => wall.id))
+  const openingIds = new Set(candidates.flatMap((wall) => wall.openings.map((opening) => opening.id)))
+  if (!Array.isArray(edits?.walls) || !Array.isArray(edits?.openings)) {
+    return Response.json({ error: "墙体修正数据无效。" }, { status: 400 })
+  }
+  const wallEdits = new Map(edits.walls.map((item) => [item.id, item.active]))
+  const openingEdits = new Map(edits.openings.map((item) => [item.id, item.kind]))
+  if (
+    wallEdits.size !== wallIds.size
+    || openingEdits.size !== openingIds.size
+    || [...wallEdits].some(([id, active]) => !wallIds.has(id) || typeof active !== "boolean")
+    || [...openingEdits].some(
+      ([id, kind]) => !openingIds.has(id) || !["door", "window", "ignore"].includes(kind),
+    )
+  ) {
+    return Response.json({ error: "墙体修正数据无效。" }, { status: 400 })
+  }
+
+  const previousWalls = new Map(
+    (meta.mode === "ai" ? checkpoint.detected.walls : candidates).map((wall) => [wall.id, wall]),
+  )
+  const walls = candidates
+    .filter((wall) => wallEdits.get(wall.id))
+    .map((candidate) => {
+      const previous = previousWalls.get(candidate.id)
+      const previousOpenings = new Map(
+        previous?.openings.map((opening) => [opening.id, opening]) || [],
+      )
+      return {
+        ...(previous || {
+          ...candidate,
+          confidence: 1,
+          evidence: ["用户确认"],
+        }),
+        openings: candidate.openings
+          .filter((opening) => openingEdits.get(opening.id) !== "ignore")
+          .map((opening) => {
+            const kind = openingEdits.get(opening.id)
+            const previousOpening = previousOpenings.get(opening.id)
+            return previousOpening?.kind === kind
+              ? previousOpening
+              : {
+                  ...opening,
+                  kind,
+                  confidence: 1,
+                  evidence: ["用户确认"],
+                  source_hint: "user",
+                }
+          }),
+      }
+    })
+  if (!walls.length) {
+    return Response.json({ error: "至少需要保留一段墙体。" }, { status: 400 })
+  }
+
+  const thicknessCounts = new Map()
+  for (const wall of walls) {
+    const thickness = Math.round(wall.thickness)
+    thicknessCounts.set(thickness, (thicknessCounts.get(thickness) || 0) + 1)
+  }
+  checkpoint[meta.mode === "ai" ? "detected" : "candidates"] = {
+    ...checkpoint.candidates,
+    walls,
+    thickness_counts: [...thicknessCounts],
+  }
+  await writeFile(checkpointPath, JSON.stringify(checkpoint))
+  if (meta.mode === "ai") {
+    const modelPath = path.join(directory, "detected_model.json")
+    const model = JSON.parse(await readFile(modelPath, "utf8"))
+    model.recognition.manually_reviewed = true
+    model.walls = model.walls.map((wall) => {
+      const active = wallEdits.get(wall.id)
+      const wallChanged = active !== previousWalls.has(wall.id)
+      return {
+        ...wall,
+        install_panel: active,
+        wall_type: wallChanged
+          ? active ? "cleanroom_panel_wall" : "non_panel_wall"
+          : wall.wall_type,
+        ...(wallChanged ? { confidence: 1, evidence: ["用户确认"], source: "USER" } : {}),
+        openings: wall.openings.map((opening) => {
+          const kind = openingEdits.get(opening.id)
+          const finalKind = kind === "ignore" ? "other" : kind
+          return opening.kind === finalKind
+            ? opening
+            : {
+                ...opening,
+                kind: finalKind,
+                confidence: 1,
+                evidence: ["用户确认"],
+                source: "USER",
+              }
+        }),
+      }
+    })
+    model.low_confidence_ids = model.walls.flatMap((wall) => [
+      ...(wall.confidence < 0.85 ? [wall.id] : []),
+      ...wall.openings
+        .filter((opening) => opening.confidence < 0.85)
+        .map((opening) => opening.id),
+    ])
+    await writeFile(modelPath, JSON.stringify(model, null, 2))
+  }
+
   return streamStages(
     [["generate", "生成排版图和材料清单…"]],
     meta.args,
@@ -151,22 +258,39 @@ export async function POST(request) {
       const checkpoint = JSON.parse(
         await readFile(path.join(directory, "conversion_checkpoint.json"), "utf8"),
       )
-      const detected = checkpoint[mode === "ai" ? "detected" : "candidates"]
+      const entityMap = JSON.parse(
+        await readFile(path.join(directory, "review_entities.json"), "utf8"),
+      )
+      const candidates = checkpoint.candidates
+      const detectedWalls = new Map(
+        checkpoint[mode === "ai" ? "detected" : "candidates"].walls.map((wall) => [wall.id, wall]),
+      )
       send({
         type: "review",
         job,
         mode,
-        walls: detected.walls.map((wall) => ({
-          id: wall.id,
-          start: wall.start,
-          end: wall.end,
-          thickness: wall.thickness,
-          openings: wall.openings.map((opening) => ({
-            kind: opening.kind,
-            startOffset: opening.start_offset,
-            endOffset: opening.end_offset,
-          })),
-        })),
+        entityMap,
+        reviewUrl: `/api/files/${job}/review_candidates.dxf`,
+        walls: candidates.walls.map((wall) => {
+          const detected = detectedWalls.get(wall.id)
+          const detectedOpenings = new Map(
+            detected?.openings.map((opening) => [opening.id, opening]) || [],
+          )
+          return {
+            id: wall.id,
+            start: wall.start,
+            end: wall.end,
+            thickness: wall.thickness,
+            active: Boolean(detected),
+            openings: wall.openings.map((opening) => ({
+              id: opening.id,
+              kind: detectedOpenings.get(opening.id)?.kind || opening.kind,
+              active: mode === "local" || detectedOpenings.has(opening.id),
+              startOffset: opening.start_offset,
+              endOffset: opening.end_offset,
+            })),
+          }
+        }),
       })
     })
   } catch (error) {

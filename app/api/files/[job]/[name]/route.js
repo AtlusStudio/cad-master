@@ -11,6 +11,7 @@ const OUTPUT_FILES = new Set([
   "panel_schedule.json",
   "detected_model.json",
   "ai_recognition.json",
+  "review_candidates.dxf",
 ])
 
 export async function GET(_request, { params }) {

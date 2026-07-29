@@ -14,7 +14,13 @@ from .ai_recognizer import (
 )
 from .ceiling_layout import calculate_ceiling_layout, draw_ceiling_layout
 from .config import DEFAULT_CONFIG, MaterialConfig
-from .dxf_reader import ensure_panel_layers, read_dxf, save_detected_walls, save_dxf
+from .dxf_reader import (
+    ensure_panel_layers,
+    read_dxf,
+    save_detected_walls,
+    save_dxf,
+    save_review_walls,
+)
 from .material_report import write_schedule
 from .panel_drawer import collect_obstacle_boxes, draw_wall_layout
 from .panel_optimizer import layout_wall
@@ -128,6 +134,25 @@ def _write_checkpoint(output_path: str, data: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
+def _write_review(
+    output_path: str,
+    doc,
+    candidates: DetectionResult,
+    accepted: DetectionResult,
+) -> None:
+    directory = Path(output_path).parent
+    handles = save_review_walls(
+        doc,
+        candidates.walls,
+        accepted.walls,
+        directory / "review_candidates.dxf",
+    )
+    (directory / "review_entities.json").write_text(
+        json.dumps(handles, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
 def detect_stage(args: argparse.Namespace) -> None:
     doc = read_dxf(args.input)
     drawing_path = (
@@ -154,6 +179,8 @@ def detect_stage(args: argparse.Namespace) -> None:
             "candidates": asdict(candidates),
         },
     )
+    if args.mode == "local":
+        _write_review(args.output, doc, candidates, candidates)
 
 
 def recognize_stage(args: argparse.Namespace) -> None:
@@ -191,10 +218,9 @@ def recognize_stage(args: argparse.Namespace) -> None:
         encoding="utf-8",
     )
     detected = apply_recognition_decisions(candidates, decisions)
-    if not detected.walls:
-        raise ValueError("AI 未确认任何需要安装彩钢板的墙段")
     checkpoint["detected"] = asdict(detected)
     _write_checkpoint(args.output, checkpoint)
+    _write_review(args.output, doc, candidates, detected)
 
 
 def generate_stage(args: argparse.Namespace) -> None:

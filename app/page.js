@@ -1,6 +1,8 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useState } from "react"
+
+import CadReview from "./cad-review"
 
 const FILE_LABELS = {
   "panel_layout_result.dxf": "墙板排版图",
@@ -15,85 +17,6 @@ const FILE_LABELS = {
 function formatSize(size) {
   if (size < 1024 * 1024) return `${Math.ceil(size / 1024)} KB`
   return `${(size / 1024 / 1024).toFixed(1)} MB`
-}
-
-const PREVIEW_COLORS = {
-  wall: "#2878b8",
-  door: "#ff6b35",
-  window: "#32a66b",
-}
-
-function WallPreview({ walls }) {
-  const canvasRef = useRef(null)
-
-  useEffect(() => {
-    const canvas = canvasRef.current
-    const context = canvas.getContext("2d")
-    const points = walls.flatMap((wall) => [wall.start, wall.end])
-    const xs = points.map(([x]) => x)
-    const ys = points.map(([, y]) => y)
-    const bounds = {
-      minX: Math.min(...xs),
-      maxX: Math.max(...xs),
-      minY: Math.min(...ys),
-      maxY: Math.max(...ys),
-    }
-    const padding = 50
-    const scale = Math.min(
-      (canvas.width - padding * 2) / Math.max(bounds.maxX - bounds.minX, 1),
-      (canvas.height - padding * 2) / Math.max(bounds.maxY - bounds.minY, 1),
-    )
-    const point = ([x, y]) => [
-      padding + (x - bounds.minX) * scale,
-      canvas.height - padding - (y - bounds.minY) * scale,
-    ]
-
-    context.clearRect(0, 0, canvas.width, canvas.height)
-    context.lineCap = "butt"
-    for (const wall of walls) {
-      const [startX, startY] = point(wall.start)
-      const [endX, endY] = point(wall.end)
-      const length = Math.hypot(endX - startX, endY - startY)
-      const lineWidth = Math.max(4, wall.thickness * scale)
-      context.strokeStyle = PREVIEW_COLORS.wall
-      context.lineWidth = lineWidth
-      context.beginPath()
-      context.moveTo(startX, startY)
-      context.lineTo(endX, endY)
-      context.stroke()
-
-      for (const opening of wall.openings) {
-        const from = opening.startOffset * scale / length
-        const to = opening.endOffset * scale / length
-        context.strokeStyle = PREVIEW_COLORS[opening.kind] || PREVIEW_COLORS.wall
-        context.lineWidth = lineWidth + 2
-        context.beginPath()
-        context.moveTo(
-          startX + (endX - startX) * from,
-          startY + (endY - startY) * from,
-        )
-        context.lineTo(
-          startX + (endX - startX) * to,
-          startY + (endY - startY) * to,
-        )
-        context.stroke()
-      }
-    }
-  }, [walls])
-
-  const openings = walls.flatMap((wall) => wall.openings)
-  return (
-    <div className="wall-preview">
-      <canvas ref={canvasRef} width="1200" height="680">
-        当前浏览器不支持 Canvas 预览。
-      </canvas>
-      <div className="preview-summary">
-        <span><i style={{ background: PREVIEW_COLORS.wall }} />墙面 {walls.length}</span>
-        <span><i style={{ background: PREVIEW_COLORS.door }} />门 {openings.filter((item) => item.kind === "door").length}</span>
-        <span><i style={{ background: PREVIEW_COLORS.window }} />窗 {openings.filter((item) => item.kind === "window").length}</span>
-      </div>
-    </div>
-  )
 }
 
 export default function Home() {
@@ -168,7 +91,17 @@ export default function Home() {
       const response = await fetch("/api/convert", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "confirm", job: state.job }),
+        body: JSON.stringify({
+          action: "confirm",
+          job: state.job,
+          edits: {
+            walls: state.walls.map((wall) => ({ id: wall.id, active: wall.active })),
+            openings: state.walls.flatMap((wall) => wall.openings.map((opening) => ({
+              id: opening.id,
+              kind: opening.active ? opening.kind : "ignore",
+            }))),
+          },
+        }),
       })
       await readEvents(response)
     } catch (error) {
@@ -327,7 +260,12 @@ export default function Home() {
                 <button type="button" onClick={confirmWalls}>确认并继续</button>
               </div>
             </div>
-            <WallPreview walls={state.walls} />
+            <CadReview
+              walls={state.walls}
+              entityMap={state.entityMap}
+              reviewUrl={state.reviewUrl}
+              onChange={(walls) => setState((current) => ({ ...current, walls }))}
+            />
           </div>
         )}
         {state.status === "error" && (

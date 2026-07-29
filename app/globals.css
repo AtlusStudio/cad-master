@@ -509,16 +509,102 @@ h1 {
   padding: 18px 26px 22px;
 }
 
-.wall-preview canvas {
+.cad-viewer-shell {
+  position: relative;
+}
+
+.cad-viewer {
   width: 100%;
-  height: auto;
-  display: block;
+  height: min(68vh, 680px);
+  min-height: 440px;
+  overflow: hidden;
   border: 1px solid var(--line);
-  background:
-    linear-gradient(rgba(16, 35, 61, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(16, 35, 61, 0.035) 1px, transparent 1px),
-    #f8faf9;
-  background-size: 20px 20px;
+  background: #1c2328;
+}
+
+.cad-viewer canvas {
+  display: block;
+}
+
+.cad-viewer-state {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #1c2328;
+  color: #d5e5ef;
+  font-size: 12px;
+}
+
+.cad-viewer-help {
+  margin: 8px 0 0 !important;
+  text-align: right;
+}
+
+.candidate-editor {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.candidate-editor label {
+  min-width: 260px;
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.candidate-editor select {
+  height: 38px;
+  padding: 0 32px 0 10px;
+  border: 1px solid var(--line);
+  background: white;
+  color: var(--ink);
+  font: inherit;
+}
+
+.candidate-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.candidate-actions button {
+  min-height: 38px;
+  padding: 0 13px;
+  border: 1px solid var(--navy);
+  background: white;
+  color: var(--navy);
+  cursor: pointer;
+}
+
+.candidate-actions .ignore-action {
+  border-color: #9a4630;
+  color: #9a4630;
+}
+
+.candidate-history {
+  display: flex;
+  gap: 8px;
+}
+
+.candidate-history button {
+  min-height: 38px;
+  padding: 0 11px;
+  border: 0;
+  background: transparent;
+  color: var(--blue);
+  cursor: pointer;
+}
+
+.candidate-history button:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.45;
 }
 
 .preview-summary {
@@ -538,6 +624,22 @@ h1 {
 .preview-summary i {
   width: 18px;
   height: 4px;
+}
+
+.legend-wall {
+  background: #00d2ff;
+}
+
+.legend-door {
+  background: #ff6b35;
+}
+
+.legend-window {
+  background: #32a66b;
+}
+
+.legend-ignore {
+  background: #9aa3a8;
 }
 
 .progress-log {
@@ -655,6 +757,15 @@ footer {
   .review-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .candidate-editor {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .candidate-editor label {
+    min-width: 0;
   }
 }
 

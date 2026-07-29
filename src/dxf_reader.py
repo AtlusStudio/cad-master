@@ -115,3 +115,85 @@ def save_detected_walls(
             for first, second in zip(corners, (*corners[1:], corners[0])):
                 modelspace.add_line(first, second, dxfattribs={"layer": layer})
     save_dxf(wall_doc, path)
+
+
+def save_review_walls(
+    source_doc: Drawing,
+    candidates: Iterable[WallSegment],
+    accepted: Iterable[WallSegment],
+    path: str | Path,
+) -> dict[str, dict[str, str]]:
+    review_doc = source_doc
+    for layer in review_doc.layers:
+        layer.color = 8
+        layer.rgb = (154, 163, 168)
+    for block in review_doc.blocks:
+        for entity in block:
+            if entity.dxftype() in {"HATCH", "MPOLYGON", "SOLID", "TRACE", "WIPEOUT"}:
+                entity.destroy()
+                continue
+            entity.dxf.color = 256
+            entity.dxf.discard("true_color")
+
+    for name, aci, rgb in (
+        ("CADMASTER_REVIEW_WALL", 4, (0, 210, 255)),
+        ("CADMASTER_REVIEW_DOOR", 30, (255, 107, 53)),
+        ("CADMASTER_REVIEW_WINDOW", 3, (50, 166, 107)),
+        ("CADMASTER_REVIEW_IGNORE", 8, (154, 163, 168)),
+    ):
+        layer = review_doc.layers.get(name) if name in review_doc.layers else review_doc.layers.add(name)
+        layer.color = aci
+        layer.rgb = rgb
+
+    accepted_walls = {wall.id: wall for wall in accepted}
+    handles: dict[str, dict[str, str]] = {}
+    modelspace = review_doc.modelspace()
+
+    def add_line(start, end, layer: str, item: dict[str, str]) -> None:
+        entity = modelspace.add_line(
+            (*start, 1.0),
+            (*end, 1.0),
+            dxfattribs={"layer": layer},
+        )
+        handles[str(entity.dxf.handle)] = item
+
+    for wall in candidates:
+        accepted_wall = accepted_walls.get(wall.id)
+        accepted_openings = {
+            opening.id: opening
+            for opening in accepted_wall.openings
+        } if accepted_wall else {}
+        normal = left_normal(wall.start, wall.end)
+        half_thickness = wall.thickness / 2.0
+        item = {"type": "wall", "id": wall.id, "wallId": wall.id}
+        wall_layer = "CADMASTER_REVIEW_WALL" if accepted_wall else "CADMASTER_REVIEW_IGNORE"
+        for offset in (-half_thickness, half_thickness):
+            add_line(
+                translated(wall.start, normal, offset),
+                translated(wall.end, normal, offset),
+                wall_layer,
+                item,
+            )
+
+        for opening in wall.openings:
+            accepted_opening = accepted_openings.get(opening.id)
+            layer = (
+                f"CADMASTER_REVIEW_{accepted_opening.kind.upper()}"
+                if accepted_opening
+                else "CADMASTER_REVIEW_IGNORE"
+            )
+            start = point_at(wall.start, wall.end, opening.start_offset, wall.length)
+            end = point_at(wall.start, wall.end, opening.end_offset, wall.length)
+            opening_item = {"type": "opening", "id": opening.id, "wallId": wall.id}
+            corners = (
+                translated(start, normal, -half_thickness),
+                translated(start, normal, half_thickness),
+                translated(end, normal, half_thickness),
+                translated(end, normal, -half_thickness),
+            )
+            add_line(start, end, layer, opening_item)
+            for first, second in zip(corners, (*corners[1:], corners[0])):
+                add_line(first, second, layer, opening_item)
+
+    save_dxf(review_doc, path)
+    return handles
