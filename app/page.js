@@ -1,65 +1,259 @@
-import Image from "next/image";
+"use client"
+
+import { useState } from "react"
+
+const FILE_LABELS = {
+  "panel_layout_result.dxf": "墙板排版图",
+  "ceiling_panel_layout_result.dxf": "吊顶排版图",
+  "detected_walls.dxf": "墙体识别图",
+  "panel_schedule.csv": "材料清单 CSV",
+  "panel_schedule.json": "材料清单 JSON",
+  "detected_model.json": "识别模型",
+  "ai_recognition.json": "AI 原始结果",
+}
+
+function formatSize(size) {
+  if (size < 1024 * 1024) return `${Math.ceil(size / 1024)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
 
 export default function Home() {
+  const [cadFile, setCadFile] = useState(null)
+  const [dragging, setDragging] = useState(false)
+  const [materialsFile, setMaterialsFile] = useState(null)
+  const [state, setState] = useState({ status: "idle" })
+
+  function selectCad(file) {
+    if (file && !/\.(dxf|dwg)$/i.test(file.name)) {
+      setState({ status: "error", message: "请拖入 DXF 或 DWG 图纸。" })
+      return
+    }
+    setCadFile(file || null)
+    setState({ status: "idle" })
+  }
+
+  async function convert(mode) {
+    if (!cadFile) {
+      setState({ status: "error", message: "请先选择一个 DXF 或 DWG 图纸。" })
+      return
+    }
+
+    const data = new FormData()
+    data.append("cad", cadFile)
+    if (materialsFile) data.append("materials", materialsFile)
+    data.append("mode", mode)
+    setState({ status: "running", mode, logs: [] })
+
+    try {
+      const response = await fetch("/api/convert", { method: "POST", body: data })
+      if (!response.ok) {
+        const result = await response.json()
+        throw new Error(result.error || "转换失败")
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ""
+      while (true) {
+        const { done, value } = await reader.read()
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+        const lines = buffer.split("\n")
+        buffer = lines.pop()
+        for (const line of lines) {
+          if (!line) continue
+          const event = JSON.parse(line)
+          if (event.type === "step") {
+            setState((current) => ({ ...current, logs: [...current.logs, event.message] }))
+          } else if (event.type === "done") {
+            setState((current) => ({ status: "success", logs: current.logs, ...event }))
+          } else if (event.type === "error") {
+            setState((current) => ({ status: "error", logs: current.logs, message: event.message }))
+          }
+        }
+        if (done) break
+      }
+    } catch (error) {
+      setState({ status: "error", message: error.message })
+    }
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.js file.
+    <main className="workspace">
+      <header className="topbar">
+        <a className="brand" href="/" aria-label="CAD Master 首页">
+          <span className="brand-mark">CM</span>
+          <span>
+            <strong>CAD Master</strong>
+            <small>洁净室自动排板</small>
+          </span>
+        </a>
+        <div className="system-state">
+          <span />
+          本地处理服务
+        </div>
+      </header>
+
+      <section className="intro">
+        <div>
+          <p className="eyebrow">DRAWING OPERATIONS / 排板工作台</p>
+          <h1>
+            上传图纸，
+            <br />
+            交给规则或 AI。
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+          <p className="lede">从 CAD 图纸恢复墙体，完成墙板与吊顶排版，并在同一处取回图纸和材料清单。</p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+        <div className="blueprint" aria-hidden="true">
+          <span className="bp-code">W-014</span>
+          <span className="bp-measure">1180 + 3 + 1180</span>
+          <i className="wall wall-a" />
+          <i className="wall wall-b" />
+          <i className="joint joint-a" />
+          <i className="joint joint-b" />
+        </div>
+      </section>
+
+      <section className="console">
+        <div className="step">
+          <div className="step-heading">
+            <span>01</span>
+            <div>
+              <h2>选择图纸</h2>
+              <p>支持 DXF、DWG，单个文件最大 100 MB</p>
+            </div>
+          </div>
+          <label
+            className={`upload ${cadFile ? "has-file" : ""} ${dragging ? "is-dragging" : ""}`}
+            onDragEnter={() => setDragging(true)}
+            onDragOver={(event) => event.preventDefault()}
+            onDragLeave={() => setDragging(false)}
+            onDrop={(event) => {
+              event.preventDefault()
+              setDragging(false)
+              selectCad(event.dataTransfer.files[0])
+            }}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+            <input
+              type="file"
+              accept=".dxf,.dwg"
+              onChange={(event) => selectCad(event.target.files[0])}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            <span className="upload-plus">{cadFile ? "✓" : "+"}</span>
+            <span>
+              <strong>{dragging ? "松开即可选择图纸" : cadFile?.name || "点击选择或拖入 CAD 图纸"}</strong>
+              <small>{cadFile ? formatSize(cadFile.size) : "DXF / DWG · 文件只用于本次转换任务"}</small>
+            </span>
+          </label>
         </div>
-      </main>
-    </div>
-  );
+
+        <div className="step">
+          <div className="step-heading">
+            <span>02</span>
+            <div>
+              <h2>材料参数</h2>
+              <p>可选；不上传时使用项目默认配置</p>
+            </div>
+          </div>
+          <label className="compact-upload">
+            <input
+              type="file"
+              accept=".json,application/json"
+              onChange={(event) => setMaterialsFile(event.target.files[0] || null)}
+            />
+            <span>{materialsFile?.name || "选择 materials.json"}</span>
+            <b>{materialsFile ? "更换" : "浏览"}</b>
+          </label>
+        </div>
+
+        <div className="step action-step">
+          <div className="step-heading">
+            <span>03</span>
+            <div>
+              <h2>开始转换</h2>
+              <p>AI 负责语义判断，本地模式只使用几何规则</p>
+            </div>
+          </div>
+          <div className="actions">
+            <button
+              className="primary-action"
+              type="button"
+              disabled={state.status === "running"}
+              onClick={() => convert("ai")}
+            >
+              <span>AI 转换</span>
+              <small>使用 .env 中的模型配置</small>
+            </button>
+            <button
+              className="secondary-action"
+              type="button"
+              disabled={state.status === "running"}
+              onClick={() => convert("local")}
+            >
+              <span>本地转换</span>
+              <small>不调用外部模型</small>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className={`result result-${state.status}`} aria-live="polite">
+        {state.status === "idle" && (
+          <>
+            <span className="result-index">OUTPUT</span>
+            <p>转换结果会出现在这里。</p>
+          </>
+        )}
+        {state.status === "running" && (
+          <>
+            <span className="spinner" />
+            <div>
+              <strong>{state.mode === "ai" ? "AI 正在识别并排版…" : "正在本地识别并排版…"}</strong>
+              <p>复杂图纸可能需要几分钟，请保持当前页面打开。</p>
+            </div>
+          </>
+        )}
+        {state.status === "error" && (
+          <>
+            <span className="error-mark">!</span>
+            <div>
+              <strong>转换未完成</strong>
+              <p>{state.message}</p>
+            </div>
+          </>
+        )}
+        {state.status === "success" && (
+          <>
+            <div className="result-title">
+              <span className="success-mark">✓</span>
+              <div>
+                <strong>{state.mode === "ai" ? "AI 转换完成" : "本地转换完成"}</strong>
+                <p>任务 {state.job.slice(0, 8)}</p>
+              </div>
+            </div>
+            <div className="downloads">
+              {state.files.map((file) => (
+                <a key={file.name} href={file.url}>
+                  <span>{FILE_LABELS[file.name] || file.name}</span>
+                  <small>{file.name}</small>
+                  <b>下载 ↓</b>
+                </a>
+              ))}
+            </div>
+          </>
+        )}
+        {state.logs?.length > 0 && (
+          <ol className="progress-log">
+            {state.logs.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ol>
+        )}
+      </section>
+
+      <footer>
+        <span>CAD MASTER / LOCAL WORKSPACE</span>
+        <span>图纸与结果保存在当前项目的 output 目录</span>
+      </footer>
+    </main>
+  )
 }
