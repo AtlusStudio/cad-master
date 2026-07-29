@@ -11,3 +11,7 @@ wheels/
 file/
 input/
 output/
+
+# Next.js
+/node_modules
+/.next/
