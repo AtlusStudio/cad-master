@@ -31,25 +31,16 @@ CAD_AI_MODEL="..."
 
 `CAD_AI_BASE_URL` 推荐填写到 `/v1`；如果填写完整的 `/chat/completions` 地址，程序也会直接使用，不会重复拼接。接口只需支持 `response_format=json_object`，程序会在本地按严格 Schema 校验返回结果。
 
-然后在项目根目录运行：
+AI 只接收程序提取的图层、图块、附近文字和精确几何摘要，不直接生成或修改 CAD 坐标。除原有产物外，AI 模式还会在任务目录输出 `ai_recognition.json` 和作为权威识别数据的 `detected_model.json`。置信度低于 `0.85` 的对象仍继续计算，并绘制在 `CALCULATED_LOW_CONFIDENCE` 图层供后续复核。
 
-```bash
-uv run main.py
-```
+转换只从 CMS 进入，不再手动执行完整 Python 命令。CMS API 会依次启动独立 worker：
 
-AI 只接收程序提取的图层、图块、附近文字和精确几何摘要，不直接生成或修改 CAD 坐标。除原有产物外，AI 模式还会输出 `output/ai_recognition.json` 和作为权威识别数据的 `output/detected_model.json`。置信度低于 `0.85` 的对象仍继续计算，并绘制在 `CALCULATED_LOW_CONFIDENCE` 图层供后续复核。
+- AI 模式：候选提取 `detect` → AI 识别 `recognize` → 生成结果 `generate`
+- 本地模式：候选提取 `detect` → 生成结果 `generate`
 
-运行时会显示当前处理阶段，并将 AI 返回的 JSON 流式输出到终端；长响应无需等到全部生成后才能看到内容，AI 请求超时时间为 30 分钟。
+各阶段通过任务目录中的内部 checkpoint 传递数据；CMS 会流式返回当前阶段。AI 请求超时时间为 30 分钟，缺少环境变量时会明确报错，不会自动回退到本地识别。
 
-需要完全沿用原有颜色和几何规则、不调用 AI 时使用：
-
-```bash
-uv run main.py --local-recognition
-```
-
-默认 AI 模式缺少上述环境变量时会明确报错，不会自动回退到本地识别。
-
-### 后台管理界面
+### CMS 管理界面
 
 安装前端依赖后启动 Next.js：
 
@@ -65,37 +56,19 @@ AI 不直接读取 CAD 图像，也不自行创建墙体坐标；它只对程序
 
 ### 本地识别参数
 
-```bash
-uv run main.py --local-recognition
-```
-
-`--input` 默认读取 `input/source.dwg`，`--output` 默认写入 `output/panel_layout_result.dxf`，`--materials` 默认读取 `input/materials.json`；需要使用其他路径时再显式传入。
+本地模式由 CMS 的“本地转换”按钮进入，不调用外部模型。未上传材料配置时使用 `input/materials.json`。
 
 识别不依赖图层名称，只读取可见实体，并按颜色和双线墙厚筛选：
 
-```bash
-uv run main.py \
-  --local-recognition \
-  --input input/source.dxf \
-  --materials input/materials.json \
-  --output output/panel_layout_result.dxf \
-  --wall-color 1 \
-  --wall-color 6 \
-  --wall-thickness 50 \
-  --wall-thickness 75 \
-  --wall-thickness 100 \
-  --wall-thickness-tolerance 10
-```
-
 输出：
 
-- `output/panel_layout_result.dxf`
-- `output/ceiling_panel_layout_result.dxf`（最外层墙面围成区域的吊顶彩钢板排版）
-- `output/detected_walls.dxf`（完整展示所有参与计算的墙面；绿色为连续计算范围，黄色为门洞，青色为窗洞）
-- `output/detected_model.json`（AI 模式的权威识别数据，包含全部候选、决定、置信度和依据）
-- `output/ai_recognition.json`（AI 模式的原始结构化决定，后续人工复核可复用）
-- `output/panel_schedule.csv`
-- `output/panel_schedule.json`
+- `output/gui/<任务号>/panel_layout_result.dxf`
+- `output/gui/<任务号>/ceiling_panel_layout_result.dxf`（最外层墙面围成区域的吊顶彩钢板排版）
+- `output/gui/<任务号>/detected_walls.dxf`（完整展示所有参与计算的墙面；绿色为连续计算范围，黄色为门洞，青色为窗洞）
+- `output/gui/<任务号>/detected_model.json`（AI 模式的权威识别数据，包含全部候选、决定、置信度和依据）
+- `output/gui/<任务号>/ai_recognition.json`（AI 模式的原始结构化决定，后续人工复核可复用）
+- `output/gui/<任务号>/panel_schedule.csv`
+- `output/gui/<任务号>/panel_schedule.json`
 
 ## 材料配置
 
@@ -128,11 +101,11 @@ uv run main.py \
 
 门窗洞口不依赖块名、图层、颜色或墙厚：窗洞匹配四条及以上同跨距平行窗框线；门洞匹配一个门扇开启圆弧及两条与圆弧半径等长的门扇/门框线，并直接用这些几何端点恢复洞口外径。即使门窗线与墙同色、使墙轮廓看起来连续，程序也会在合并后的整段墙上再次匹配洞口。门扇本身不计为彩钢板，但门窗洞口所在位置仍计入整面彩钢板的连续排板长度，不会在洞口边界重新起排。相邻墙段之间只有在门窗几何连续覆盖断口时才会合并，允许洞口之间保留不大于 300 mm 的门窗边框，不会把普通断墙任意连起来。默认识别 300–3000 mm 的门窗洞口。
 
-曲墙和带 bulge 的圆弧段会被跳过，并在命令行汇总数量。
+曲墙和带 bulge 的圆弧段会被跳过，并在转换结果中汇总数量。
 
-本地模式默认只识别 ACI 红色 `1` 和紫色/洋红色 `6`；AI 模式会提取所有可见颜色的双线候选，但仍以配置颜色作为可靠碎线恢复依据。实体使用 ByLayer 颜色时按其图层颜色判断。两种模式都优先墙厚 `50、75、100 mm`，每档默认接受 ±10 mm 误差。其他项目可重复传入 `--wall-color` 和 `--wall-thickness` 覆盖默认值，也可用 `--wall-thickness-tolerance` 调整墙厚容差。
+本地模式只识别 ACI 红色 `1` 和紫色/洋红色 `6`；AI 模式会提取所有可见颜色的双线候选，但仍以配置颜色作为可靠碎线恢复依据。实体使用 ByLayer 颜色时按其图层颜色判断。两种模式都优先墙厚 `50、75、100 mm`，每档接受 ±10 mm 误差。
 
-T 型墙连接端默认预留 5 mm，避免累计误差导致末块无法安装；可使用 `--junction-reserve` 在 0–10 mm 范围内调整。
+T 型墙连接端预留 5 mm，避免累计误差导致末块无法安装。
 
 ## 排板规则
 

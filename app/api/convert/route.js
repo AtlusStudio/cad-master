@@ -17,27 +17,37 @@ const OUTPUT_FILES = new Set([
   "ai_recognition.json",
 ])
 
-function runConversion(args, onStep) {
+const STAGES = {
+  ai: [
+    ["detect", "提取墙体候选…"],
+    ["recognize", "请求 AI 识别…"],
+    ["generate", "生成排版图和材料清单…"],
+  ],
+  local: [
+    ["detect", "提取墙体候选…"],
+    ["generate", "生成排版图和材料清单…"],
+  ],
+}
+
+function runStage(stage, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn("uv", ["run", "main.py", ...args], { cwd: process.cwd() })
+    const child = spawn(
+      "uv",
+      ["run", "python", "-m", "src.conversion_worker", "--stage", stage, ...args],
+      { cwd: process.cwd() },
+    )
     let output = ""
-    let pending = ""
 
     child.stdout.on("data", (chunk) => {
-      const text = chunk.toString()
-      output = `${output}${text}`.slice(-16000)
-      const lines = `${pending}${text}`.split(/\r?\n/)
-      pending = lines.pop()
-      lines.filter((line) => /^\[\d+\/\d+\]/.test(line)).forEach(onStep)
+      output = `${output}${chunk}`.slice(-16000)
     })
     child.stderr.on("data", (chunk) => {
       output = `${output}${chunk}`.slice(-16000)
     })
     child.on("error", reject)
     child.on("close", (code) => {
-      if (/^\[\d+\/\d+\]/.test(pending)) onStep(pending)
       if (code === 0) resolve(output)
-      else reject(new Error(output.trim() || `转换进程退出，状态码 ${code}`))
+      else reject(new Error(output.trim() || `${stage} 阶段退出，状态码 ${code}`))
     })
   })
 }
@@ -79,8 +89,16 @@ export async function POST(request) {
       await writeFile(materialsPath, content)
     }
 
-    const args = ["--input", inputPath, "--materials", materialsPath, "--output", outputPath]
-    if (mode === "local") args.push("--local-recognition")
+    const args = [
+      "--mode",
+      mode,
+      "--input",
+      inputPath,
+      "--materials",
+      materialsPath,
+      "--output",
+      outputPath,
+    ]
     const encoder = new TextEncoder()
 
     return new Response(
@@ -88,7 +106,10 @@ export async function POST(request) {
         async start(controller) {
           const send = (data) => controller.enqueue(encoder.encode(`${JSON.stringify(data)}\n`))
           try {
-            await runConversion(args, (message) => send({ type: "step", message }))
+            for (const [stage, message] of STAGES[mode]) {
+              send({ type: "step", stage, message })
+              await runStage(stage, args)
+            }
             const files = (await readdir(directory))
               .filter((name) => OUTPUT_FILES.has(name))
               .map((name) => ({ name, url: `/api/files/${job}/${name}` }))
