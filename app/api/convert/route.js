@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { mkdir, readdir, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 
 export const runtime = "nodejs"
@@ -17,17 +17,14 @@ const OUTPUT_FILES = new Set([
   "ai_recognition.json",
 ])
 
-const STAGES = {
+const REVIEW_STAGES = {
   ai: [
     ["detect", "提取墙体候选…"],
     ["recognize", "请求 AI 识别…"],
-    ["generate", "生成排版图和材料清单…"],
   ],
-  local: [
-    ["detect", "提取墙体候选…"],
-    ["generate", "生成排版图和材料清单…"],
-  ],
+  local: [["detect", "提取墙体候选…"]],
 }
+const JOB_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 function runStage(stage, args) {
   return new Promise((resolve, reject) => {
@@ -52,8 +49,55 @@ function runStage(stage, args) {
   })
 }
 
+function streamStages(stages, args, done) {
+  const encoder = new TextEncoder()
+  return new Response(
+    new ReadableStream({
+      async start(controller) {
+        const send = (data) => controller.enqueue(encoder.encode(`${JSON.stringify(data)}\n`))
+        try {
+          for (const [stage, message] of stages) {
+            send({ type: "step", stage, message })
+            await runStage(stage, args)
+          }
+          await done(send)
+        } catch (error) {
+          send({ type: "error", message: error.message })
+        } finally {
+          controller.close()
+        }
+      },
+    }),
+    { headers: { "Content-Type": "application/x-ndjson; charset=utf-8" } },
+  )
+}
+
+async function confirmConversion(request) {
+  const { action, job } = await request.json()
+  if (action !== "confirm" || !JOB_PATTERN.test(job)) {
+    return Response.json({ error: "确认请求无效。" }, { status: 400 })
+  }
+
+  const directory = path.join(process.cwd(), "output", "gui", job)
+  const meta = JSON.parse(await readFile(path.join(directory, "conversion_request.json"), "utf8"))
+  return streamStages(
+    [["generate", "生成排版图和材料清单…"]],
+    meta.args,
+    async (send) => {
+      const files = (await readdir(directory))
+        .filter((name) => OUTPUT_FILES.has(name))
+        .map((name) => ({ name, url: `/api/files/${job}/${name}` }))
+      send({ type: "done", job, mode: meta.mode, files })
+    },
+  )
+}
+
 export async function POST(request) {
   try {
+    if (request.headers.get("content-type")?.startsWith("application/json")) {
+      return await confirmConversion(request)
+    }
+
     const form = await request.formData()
     const cad = form.get("cad")
     const materials = form.get("materials")
@@ -99,30 +143,32 @@ export async function POST(request) {
       "--output",
       outputPath,
     ]
-    const encoder = new TextEncoder()
-
-    return new Response(
-      new ReadableStream({
-        async start(controller) {
-          const send = (data) => controller.enqueue(encoder.encode(`${JSON.stringify(data)}\n`))
-          try {
-            for (const [stage, message] of STAGES[mode]) {
-              send({ type: "step", stage, message })
-              await runStage(stage, args)
-            }
-            const files = (await readdir(directory))
-              .filter((name) => OUTPUT_FILES.has(name))
-              .map((name) => ({ name, url: `/api/files/${job}/${name}` }))
-            send({ type: "done", job, mode, files })
-          } catch (error) {
-            send({ type: "error", message: error.message })
-          } finally {
-            controller.close()
-          }
-        },
-      }),
-      { headers: { "Content-Type": "application/x-ndjson; charset=utf-8" } },
+    await writeFile(
+      path.join(directory, "conversion_request.json"),
+      JSON.stringify({ mode, args }),
     )
+    return streamStages(REVIEW_STAGES[mode], args, async (send) => {
+      const checkpoint = JSON.parse(
+        await readFile(path.join(directory, "conversion_checkpoint.json"), "utf8"),
+      )
+      const detected = checkpoint[mode === "ai" ? "detected" : "candidates"]
+      send({
+        type: "review",
+        job,
+        mode,
+        walls: detected.walls.map((wall) => ({
+          id: wall.id,
+          start: wall.start,
+          end: wall.end,
+          thickness: wall.thickness,
+          openings: wall.openings.map((opening) => ({
+            kind: opening.kind,
+            startOffset: opening.start_offset,
+            endOffset: opening.end_offset,
+          })),
+        })),
+      })
+    })
   } catch (error) {
     const message = error instanceof SyntaxError ? "materials.json 不是有效的 JSON。" : error.message
     return Response.json({ error: message }, { status: 500 })

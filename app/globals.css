@@ -473,6 +473,73 @@ h1 {
   display: block;
 }
 
+.result-review {
+  display: block;
+  padding: 0;
+}
+
+.review-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 20px 26px;
+  border-bottom: 1px solid var(--line);
+}
+
+.review-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.review-actions button {
+  padding: 10px 14px;
+  border: 1px solid var(--navy);
+  background: white;
+  color: var(--navy);
+  cursor: pointer;
+}
+
+.review-actions button:last-child {
+  background: var(--navy);
+  color: white;
+}
+
+.wall-preview {
+  padding: 18px 26px 22px;
+}
+
+.wall-preview canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(rgba(16, 35, 61, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(16, 35, 61, 0.035) 1px, transparent 1px),
+    #f8faf9;
+  background-size: 20px 20px;
+}
+
+.preview-summary {
+  display: flex;
+  gap: 22px;
+  margin-top: 13px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.preview-summary span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.preview-summary i {
+  width: 18px;
+  height: 4px;
+}
+
 .progress-log {
   flex: 0 0 100%;
   margin: 4px 0 0;
@@ -583,6 +650,11 @@ footer {
 
   .downloads {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .review-heading {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 
