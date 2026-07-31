@@ -225,10 +225,9 @@ def recognize_stage(args: argparse.Namespace) -> None:
 
 def generate_stage(args: argparse.Namespace) -> None:
     checkpoint = _read_checkpoint(args.output)
-    key = "candidates" if args.mode == "local" else "detected"
-    if key not in checkpoint:
+    if "detected" not in checkpoint:
         raise ValueError("缺少语义识别阶段的 checkpoint")
-    detected = _detection_from_data(checkpoint[key])
+    detected = _detection_from_data(checkpoint["detected"])
     materials = load_materials(args.materials)
     output = Path(args.output)
     ceiling_output = output.parent / "ceiling_panel_layout_result.dxf"

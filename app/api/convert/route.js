@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
-import { randomUUID } from "node:crypto"
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises"
+import { createHash, randomUUID } from "node:crypto"
+import { copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 
 export const runtime = "nodejs"
@@ -25,6 +25,82 @@ const REVIEW_STAGES = {
   local: [["detect", "提取墙体候选…"]],
 }
 const JOB_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const CACHE_FILES = ["review_candidates.dxf", "review_entities.json"]
+
+function getCacheDirectory(hash, mode) {
+  return path.join(process.cwd(), "output", "cache", hash, mode)
+}
+
+async function copyCacheFiles(source, target, mode) {
+  const names = mode === "ai"
+    ? [...CACHE_FILES, "detected_model.json", "ai_recognition.json"]
+    : CACHE_FILES
+  await Promise.all(names.map((name) => copyFile(path.join(source, name), path.join(target, name))))
+}
+
+async function restoreCache(cacheDirectory, directory, inputPath, mode) {
+  let checkpoint
+  try {
+    checkpoint = JSON.parse(
+      await readFile(path.join(cacheDirectory, "conversion_checkpoint.json"), "utf8"),
+    )
+  } catch (error) {
+    if (error.code === "ENOENT") return null
+    throw error
+  }
+
+  checkpoint.drawing_path = inputPath
+  await copyCacheFiles(cacheDirectory, directory, mode)
+  await writeFile(
+    path.join(directory, "conversion_checkpoint.json"),
+    JSON.stringify(checkpoint),
+  )
+  if (mode === "ai") {
+    const modelPath = path.join(directory, "detected_model.json")
+    const model = JSON.parse(await readFile(modelPath, "utf8"))
+    model.source.path = inputPath
+    await writeFile(modelPath, JSON.stringify(model, null, 2))
+  }
+  return checkpoint
+}
+
+async function sendReview(send, checkpoint, job, mode) {
+  const directory = path.join(process.cwd(), "output", "gui", job)
+  const entityMap = JSON.parse(
+    await readFile(path.join(directory, "review_entities.json"), "utf8"),
+  )
+  const candidates = checkpoint.candidates
+  const detectedWalls = new Map(
+    (checkpoint.detected || candidates).walls.map((wall) => [wall.id, wall]),
+  )
+  send({
+    type: "review",
+    job,
+    mode,
+    entityMap,
+    reviewUrl: `/api/files/${job}/review_candidates.dxf`,
+    walls: candidates.walls.map((wall) => {
+      const detected = detectedWalls.get(wall.id)
+      const detectedOpenings = new Map(
+        detected?.openings.map((opening) => [opening.id, opening]) || [],
+      )
+      return {
+        id: wall.id,
+        start: wall.start,
+        end: wall.end,
+        thickness: wall.thickness,
+        active: Boolean(detected),
+        openings: wall.openings.map((opening) => ({
+          id: opening.id,
+          kind: detectedOpenings.get(opening.id)?.kind || opening.kind,
+          active: Boolean(detected) && detectedOpenings.has(opening.id),
+          startOffset: opening.start_offset,
+          endOffset: opening.end_offset,
+        })),
+      }
+    }),
+  })
+}
 
 function runStage(stage, args) {
   return new Promise((resolve, reject) => {
@@ -102,7 +178,7 @@ async function confirmConversion(request) {
   }
 
   const previousWalls = new Map(
-    (meta.mode === "ai" ? checkpoint.detected.walls : candidates).map((wall) => [wall.id, wall]),
+    (checkpoint.detected?.walls || candidates).map((wall) => [wall.id, wall]),
   )
   const walls = candidates
     .filter((wall) => wallEdits.get(wall.id))
@@ -143,7 +219,7 @@ async function confirmConversion(request) {
     const thickness = Math.round(wall.thickness)
     thicknessCounts.set(thickness, (thicknessCounts.get(thickness) || 0) + 1)
   }
-  checkpoint[meta.mode === "ai" ? "detected" : "candidates"] = {
+  checkpoint.detected = {
     ...checkpoint.candidates,
     walls,
     thickness_counts: [...thicknessCounts],
@@ -187,6 +263,25 @@ async function confirmConversion(request) {
     await writeFile(modelPath, JSON.stringify(model, null, 2))
   }
 
+  const cacheDirectory = getCacheDirectory(meta.sourceHash, meta.mode)
+  await mkdir(cacheDirectory, { recursive: true })
+  await copyCacheFiles(directory, cacheDirectory, meta.mode)
+  await Promise.all([
+    writeFile(
+      path.join(cacheDirectory, "conversion_checkpoint.json"),
+      JSON.stringify(checkpoint),
+    ),
+    writeFile(
+      path.join(cacheDirectory, "metadata.json"),
+      JSON.stringify({
+        fileName: meta.sourceName,
+        sha256: meta.sourceHash,
+        mode: meta.mode,
+        updatedAt: new Date().toISOString(),
+      }, null, 2),
+    ),
+  ])
+
   return streamStages(
     [["generate", "生成排版图和材料清单…"]],
     meta.args,
@@ -224,6 +319,8 @@ export async function POST(request) {
       return Response.json({ error: "材料配置不能超过 1 MB。" }, { status: 400 })
     }
 
+    const content = Buffer.from(await cad.arrayBuffer())
+    const sourceHash = createHash("sha256").update(content).digest("hex")
     const job = randomUUID()
     const directory = path.join(process.cwd(), "output", "gui", job)
     const inputPath = path.join(directory, `source${extension}`)
@@ -231,7 +328,7 @@ export async function POST(request) {
     let materialsPath = path.join(process.cwd(), "input", "materials.json")
 
     await mkdir(directory, { recursive: true })
-    await writeFile(inputPath, Buffer.from(await cad.arrayBuffer()))
+    await writeFile(inputPath, content)
 
     if (materials instanceof File && materials.size) {
       const content = Buffer.from(await materials.arrayBuffer())
@@ -252,46 +349,26 @@ export async function POST(request) {
     ]
     await writeFile(
       path.join(directory, "conversion_request.json"),
-      JSON.stringify({ mode, args }),
+      JSON.stringify({ mode, args, sourceHash, sourceName: cad.name }),
     )
+    const cached = await restoreCache(
+      getCacheDirectory(sourceHash, mode),
+      directory,
+      inputPath,
+      mode,
+    )
+    if (cached) {
+      return streamStages([], args, async (send) => {
+        send({ type: "step", stage: "cache", message: "已读取本地识别缓存。" })
+        await sendReview(send, cached, job, mode)
+      })
+    }
+
     return streamStages(REVIEW_STAGES[mode], args, async (send) => {
       const checkpoint = JSON.parse(
         await readFile(path.join(directory, "conversion_checkpoint.json"), "utf8"),
       )
-      const entityMap = JSON.parse(
-        await readFile(path.join(directory, "review_entities.json"), "utf8"),
-      )
-      const candidates = checkpoint.candidates
-      const detectedWalls = new Map(
-        checkpoint[mode === "ai" ? "detected" : "candidates"].walls.map((wall) => [wall.id, wall]),
-      )
-      send({
-        type: "review",
-        job,
-        mode,
-        entityMap,
-        reviewUrl: `/api/files/${job}/review_candidates.dxf`,
-        walls: candidates.walls.map((wall) => {
-          const detected = detectedWalls.get(wall.id)
-          const detectedOpenings = new Map(
-            detected?.openings.map((opening) => [opening.id, opening]) || [],
-          )
-          return {
-            id: wall.id,
-            start: wall.start,
-            end: wall.end,
-            thickness: wall.thickness,
-            active: Boolean(detected),
-            openings: wall.openings.map((opening) => ({
-              id: opening.id,
-              kind: detectedOpenings.get(opening.id)?.kind || opening.kind,
-              active: mode === "local" || detectedOpenings.has(opening.id),
-              startOffset: opening.start_offset,
-              endOffset: opening.end_offset,
-            })),
-          }
-        }),
-      })
+      await sendReview(send, checkpoint, job, mode)
     })
   } catch (error) {
     const message = error instanceof SyntaxError ? "materials.json 不是有效的 JSON。" : error.message
