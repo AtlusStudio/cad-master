@@ -119,10 +119,16 @@ def draw_wall_layout(
 
     half_joint = wall.thickness / 2.0
     for panel, next_panel in zip(panel_list, panel_list[1:]):
+        if any(
+            panel.end_offset <= opening.start_offset
+            and opening.end_offset <= next_panel.start_offset
+            for opening in wall.openings
+        ):
+            continue
         center = point_at(
             wall.start,
             wall.end,
-            (panel.end_offset + next_panel.start_offset) / 2.0,
+            next_panel.start_offset,
             wall.length,
         )
         modelspace.add_line(

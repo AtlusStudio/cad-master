@@ -293,6 +293,7 @@ export default function CadReview({ walls, entityMap, reviewUrl, onChange }) {
         layerService.setLayerColor(REVIEW_LAYERS.wall, layerService.parseColorInput("RGB:0,255,0"))
         layerService.setLayerColor(REVIEW_LAYERS.door, layerService.parseColorInput("RGB:255,255,0"))
         layerService.setLayerColor(REVIEW_LAYERS.window, layerService.parseColorInput("RGB:255,79,163"))
+        manager.curView.onHover = () => {}
         manager.curView.mode = cad.AcEdViewMode.SELECTION
         manager.curView.selectionBoxSize = 10
         let syncingSelection = false

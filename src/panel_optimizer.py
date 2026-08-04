@@ -77,7 +77,11 @@ def optimize_span(
     if primary_width not in unique_widths:
         raise ValueError("主板宽必须包含在标准板宽中")
 
-    rounded_gap = round(joint_gap)
+    if length < min_cut_width + joint_gap * 2:
+        cut = _round_to_step(length, cut_step)
+        if min_cut_width <= cut <= max(choices) and abs(length - cut) <= end_tolerance:
+            return [PanelSize(cut, None)]
+
     limit = ceil(length + joint_gap + DEFAULT_CONFIG.tolerance)
     states: list[tuple[float, ...] | None] = [None] * (limit + 1)
     states[0] = ()
@@ -85,7 +89,7 @@ def optimize_span(
         if sequence is None:
             continue
         for width in choices:
-            next_amount = amount + round(width) + rounded_gap
+            next_amount = amount + round(width)
             if next_amount > limit:
                 continue
             candidate = _ordered((*sequence, width), choices)
@@ -104,6 +108,19 @@ def optimize_span(
         sequence = min(exact, key=lambda item: (item[0], *_sequence_key(item[1], choices)))[1]
         return [PanelSize(width, width) for width in sequence]
 
+    usable_length = length - joint_gap * 2
+    aligned_standard = [
+        (abs(usable_length - sum(sequence)), sequence)
+        for sequence in states
+        if sequence and abs(usable_length - sum(sequence)) <= end_tolerance
+    ]
+    if aligned_standard:
+        sequence = min(
+            aligned_standard,
+            key=lambda item: (item[0], *_sequence_key(item[1], choices)),
+        )[1]
+        return [PanelSize(width, width) for width in sequence]
+
     candidates: list[tuple[tuple[object, ...], list[PanelSize]]] = []
     for sequence in states:
         if sequence is None:
@@ -111,30 +128,26 @@ def optimize_span(
         standard_total = sum(sequence)
         order_key = _sequence_key(sequence, choices)[2:]
 
-        one_cut_raw = length - standard_total - joint_gap * len(sequence)
+        one_cut_raw = usable_length - standard_total
         one_cut = _round_to_step(one_cut_raw, cut_step)
-        one_cut_error = length - (standard_total + one_cut + joint_gap * len(sequence))
+        one_cut_error = usable_length - standard_total - one_cut
         if (
             min_cut_width <= one_cut <= max(choices)
             and abs(one_cut_error) <= end_tolerance
         ):
             sizes = [*(PanelSize(width, width) for width in sequence), PanelSize(one_cut, None)]
             key = (
-                -sequence.count(primary_width),
-                -standard_total / length,
                 1,
+                -standard_total,
+                -sequence.count(primary_width),
                 len(sizes),
                 *order_key,
             )
             candidates.append((key, sizes))
 
-        two_cut_raw = (
-            length - standard_total - joint_gap * (len(sequence) + 1)
-        ) / 2.0
+        two_cut_raw = (usable_length - standard_total) / 2.0
         two_cut = _round_to_step(two_cut_raw, cut_step)
-        two_cut_error = length - (
-            standard_total + two_cut * 2 + joint_gap * (len(sequence) + 1)
-        )
+        two_cut_error = usable_length - standard_total - two_cut * 2
         if (
             min_cut_width <= two_cut <= max(choices)
             and abs(two_cut_error) <= end_tolerance
@@ -145,9 +158,9 @@ def optimize_span(
                 PanelSize(two_cut, None),
             ]
             key = (
+                2,
+                -standard_total,
                 -sequence.count(primary_width),
-                -standard_total / length,
-                0,
                 len(sizes),
                 *order_key,
             )
@@ -166,6 +179,9 @@ def layout_wall(wall: WallSegment, materials: MaterialConfig) -> list[Panel]:
 
     def add_solid_span(start: float, end: float) -> None:
         if end <= start:
+            return
+        if end - start < materials.min_cut_width:
+            panels.append(Panel(wall.id, start, end, end - start, None))
             return
         sizes = optimize_span(
             end - start,
@@ -194,5 +210,9 @@ def layout_wall(wall: WallSegment, materials: MaterialConfig) -> list[Panel]:
                 materials.joint_gap if index < len(sizes) - 1 else 0.0
             )
 
-    add_solid_span(0.0, wall.length)
+    cursor = 0.0
+    for opening in sorted(wall.openings, key=lambda item: item.start_offset):
+        add_solid_span(cursor, opening.start_offset)
+        cursor = max(cursor, opening.end_offset)
+    add_solid_span(cursor, wall.length)
     return panels
