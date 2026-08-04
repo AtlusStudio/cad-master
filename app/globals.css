@@ -542,6 +542,54 @@ h1 {
   text-align: right;
 }
 
+.cad-draw-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.cad-draw-toolbar > div {
+  display: flex;
+  gap: 8px;
+}
+
+.cad-draw-toolbar button {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--navy);
+  background: var(--navy);
+  color: white;
+  cursor: pointer;
+}
+
+.cad-draw-toolbar button:last-child {
+  background: white;
+  color: var(--navy);
+}
+
+.cad-draw-toolbar button[aria-pressed="true"] {
+  background: var(--orange);
+  color: var(--navy);
+}
+
+.cad-draw-toolbar button:focus-visible {
+  outline: 3px solid rgba(255, 107, 53, 0.35);
+  outline-offset: 2px;
+}
+
+.cad-draw-toolbar button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.cad-draw-toolbar span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .candidate-editor {
   display: flex;
   align-items: end;
@@ -627,15 +675,15 @@ h1 {
 }
 
 .legend-wall {
-  background: #00d2ff;
+  background: #00ff00;
 }
 
 .legend-door {
-  background: #ff6b35;
+  background: #ffff00;
 }
 
 .legend-window {
-  background: #32a66b;
+  background: #ff4fa3;
 }
 
 .legend-ignore {
@@ -759,6 +807,7 @@ footer {
     flex-direction: column;
   }
 
+  .cad-draw-toolbar,
   .candidate-editor {
     align-items: stretch;
     flex-direction: column;

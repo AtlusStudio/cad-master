@@ -64,7 +64,7 @@ AI 不直接读取 CAD 图像，也不自行创建墙体坐标；它只对程序
 
 - `output/gui/<任务号>/panel_layout_result.dxf`
 - `output/gui/<任务号>/ceiling_panel_layout_result.dxf`（最外层墙面围成区域的吊顶彩钢板排版）
-- `output/gui/<任务号>/detected_walls.dxf`（完整展示所有参与计算的墙面；绿色为连续计算范围，黄色为门洞，青色为窗洞）
+- `output/gui/<任务号>/detected_walls.dxf`（完整展示所有参与计算的墙面；绿色为连续计算范围，黄色为门洞，粉色为窗洞）
 - `output/gui/<任务号>/detected_model.json`（AI 模式的权威识别数据，包含全部候选、决定、置信度和依据）
 - `output/gui/<任务号>/ai_recognition.json`（AI 模式的原始结构化决定，后续人工复核可复用）
 - `output/gui/<任务号>/panel_schedule.csv`

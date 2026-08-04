@@ -95,11 +95,34 @@ export default function Home() {
           action: "confirm",
           job: state.job,
           edits: {
-            walls: state.walls.map((wall) => ({ id: wall.id, active: wall.active })),
-            openings: state.walls.flatMap((wall) => wall.openings.map((opening) => ({
-              id: opening.id,
-              kind: opening.active ? opening.kind : "ignore",
-            }))),
+            walls: state.walls
+              .filter((wall) => !wall.manual)
+              .map((wall) => ({ id: wall.id, active: wall.active })),
+            openings: state.walls.flatMap((wall) => wall.openings
+              .filter((opening) => !opening.manual)
+              .map((opening) => ({
+                id: opening.id,
+                kind: opening.active ? opening.kind : "ignore",
+              }))),
+            manualWalls: state.walls
+              .filter((wall) => wall.manual)
+              .map(({ id, start, end, thickness, active }) => ({
+                id,
+                start,
+                end,
+                thickness,
+                active,
+              })),
+            manualOpenings: state.walls.flatMap((wall) => wall.openings
+              .filter((opening) => opening.manual)
+              .map(({ id, startOffset, endOffset, kind, active }) => ({
+                id,
+                wallId: wall.id,
+                startOffset,
+                endOffset,
+                kind,
+                active,
+              }))),
           },
         }),
       })

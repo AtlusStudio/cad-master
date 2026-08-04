@@ -81,7 +81,7 @@ def save_detected_walls(
     wall_doc.header["$INSUNITS"] = source_doc.header.get("$INSUNITS", 0)
     wall_doc.layers.add("CALCULATED_SURFACE", color=3)
     wall_doc.layers.add("CALCULATED_DOOR", color=2)
-    wall_doc.layers.add("CALCULATED_WINDOW", color=4)
+    wall_doc.layers.add("CALCULATED_WINDOW", color=6).rgb = (255, 79, 163)
     wall_doc.layers.add("CALCULATED_LOW_CONFIDENCE", color=30)
     modelspace = wall_doc.modelspace()
     for wall in walls:
@@ -136,9 +136,9 @@ def save_review_walls(
             entity.dxf.discard("true_color")
 
     for name, aci, rgb in (
-        ("CADMASTER_REVIEW_WALL", 4, (0, 210, 255)),
-        ("CADMASTER_REVIEW_DOOR", 30, (255, 107, 53)),
-        ("CADMASTER_REVIEW_WINDOW", 3, (50, 166, 107)),
+        ("CADMASTER_REVIEW_WALL", 3, (0, 255, 0)),
+        ("CADMASTER_REVIEW_DOOR", 2, (255, 255, 0)),
+        ("CADMASTER_REVIEW_WINDOW", 210, (255, 79, 163)),
         ("CADMASTER_REVIEW_IGNORE", 8, (154, 163, 168)),
     ):
         layer = review_doc.layers.get(name) if name in review_doc.layers else review_doc.layers.add(name)
@@ -191,7 +191,6 @@ def save_review_walls(
                 translated(end, normal, half_thickness),
                 translated(end, normal, -half_thickness),
             )
-            add_line(start, end, layer, opening_item)
             for first, second in zip(corners, (*corners[1:], corners[0])):
                 add_line(first, second, layer, opening_item)
 

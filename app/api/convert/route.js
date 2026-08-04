@@ -73,30 +73,82 @@ async function sendReview(send, checkpoint, job, mode) {
   const detectedWalls = new Map(
     (checkpoint.detected || candidates).walls.map((wall) => [wall.id, wall]),
   )
+  const manualEdits = checkpoint.manual_edits || {
+    modified_openings: [],
+    added_walls: [],
+    added_openings: [],
+  }
+  const recognizedOpenings = new Map(
+    (checkpoint.recognized || candidates).walls.flatMap(
+      (wall) => wall.openings.map((opening) => [opening.id, opening]),
+    ),
+  )
+  const modifiedOpenings = new Map(
+    manualEdits.modified_openings.map((opening) => [opening.id, opening]),
+  )
+  const manualOpeningsByWall = new Map()
+  for (const opening of manualEdits.added_openings) {
+    manualOpeningsByWall.set(
+      opening.wallId,
+      [...(manualOpeningsByWall.get(opening.wallId) || []), opening],
+    )
+  }
+  const reviewWalls = [
+    ...candidates.walls.map((wall) => ({ ...wall, manual: false })),
+    ...manualEdits.added_walls.map((wall) => ({ ...wall, openings: [], manual: true })),
+  ]
   send({
     type: "review",
     job,
     mode,
     entityMap,
     reviewUrl: `/api/files/${job}/review_candidates.dxf`,
-    walls: candidates.walls.map((wall) => {
+    walls: reviewWalls.map((wall) => {
       const detected = detectedWalls.get(wall.id)
       const detectedOpenings = new Map(
         detected?.openings.map((opening) => [opening.id, opening]) || [],
       )
+      const openings = [
+        ...wall.openings.map((opening) => ({ ...opening, manual: false })),
+        ...(manualOpeningsByWall.get(wall.id) || []).map((opening) => ({
+          id: opening.id,
+          kind: opening.kind,
+          start_offset: opening.startOffset,
+          end_offset: opening.endOffset,
+          active: opening.active,
+          manual: true,
+        })),
+      ]
       return {
         id: wall.id,
         start: wall.start,
         end: wall.end,
         thickness: wall.thickness,
         active: Boolean(detected),
-        openings: wall.openings.map((opening) => ({
-          id: opening.id,
-          kind: detectedOpenings.get(opening.id)?.kind || opening.kind,
-          active: Boolean(detected) && detectedOpenings.has(opening.id),
-          startOffset: opening.start_offset,
-          endOffset: opening.end_offset,
-        })),
+        manual: wall.manual,
+        openings: openings.map((opening) => {
+          const detectedOpening = detectedOpenings.get(opening.id)
+          const modifiedOpening = modifiedOpenings.get(opening.id)
+          const recognizedOpening = recognizedOpenings.get(opening.id)
+          const active = opening.manual
+            ? opening.active
+            : detectedOpening
+              ? true
+              : modifiedOpening
+                ? modifiedOpening.kind !== "ignore"
+                : Boolean(recognizedOpening)
+          return {
+            id: opening.id,
+            kind: detectedOpening?.kind
+              || (modifiedOpening?.kind !== "ignore" ? modifiedOpening?.kind : null)
+              || recognizedOpening?.kind
+              || opening.kind,
+            active,
+            startOffset: opening.start_offset,
+            endOffset: opening.end_offset,
+            manual: opening.manual,
+          }
+        }),
       }
     }),
   })
@@ -161,11 +213,29 @@ async function confirmConversion(request) {
   const candidates = checkpoint.candidates.walls
   const wallIds = new Set(candidates.map((wall) => wall.id))
   const openingIds = new Set(candidates.flatMap((wall) => wall.openings.map((opening) => opening.id)))
-  if (!Array.isArray(edits?.walls) || !Array.isArray(edits?.openings)) {
+  const manualWalls = edits?.manualWalls ?? []
+  const manualOpenings = edits?.manualOpenings ?? []
+  if (
+    !Array.isArray(edits?.walls)
+    || !Array.isArray(edits?.openings)
+    || !Array.isArray(manualWalls)
+    || !Array.isArray(manualOpenings)
+  ) {
     return Response.json({ error: "墙体修正数据无效。" }, { status: 400 })
   }
   const wallEdits = new Map(edits.walls.map((item) => [item.id, item.active]))
   const openingEdits = new Map(edits.openings.map((item) => [item.id, item.kind]))
+  const manualWallIds = new Set(manualWalls.map((wall) => wall?.id))
+  const manualOpeningIds = new Set(manualOpenings.map((opening) => opening?.id))
+  const validPoint = (point) => (
+    Array.isArray(point)
+    && point.length === 2
+    && point.every(Number.isFinite)
+  )
+  const lengthOf = (wall) => Math.hypot(
+    wall.end[0] - wall.start[0],
+    wall.end[1] - wall.start[1],
+  )
   if (
     wallEdits.size !== wallIds.size
     || openingEdits.size !== openingIds.size
@@ -177,9 +247,64 @@ async function confirmConversion(request) {
     return Response.json({ error: "墙体修正数据无效。" }, { status: 400 })
   }
 
+  const manualWallLengths = new Map()
+  if (
+    manualWallIds.size !== manualWalls.length
+    || manualOpeningIds.size !== manualOpenings.length
+    || manualWalls.some((wall) => {
+      if (
+        !/^MW\d{4,}$/.test(wall?.id)
+        || wallIds.has(wall.id)
+        || !validPoint(wall.start)
+        || !validPoint(wall.end)
+        || !Number.isFinite(wall.thickness)
+        || wall.thickness <= 0
+        || typeof wall.active !== "boolean"
+      ) return true
+      const length = lengthOf(wall)
+      manualWallLengths.set(wall.id, length)
+      return length <= 0
+    })
+  ) {
+    return Response.json({ error: "手绘墙体数据无效。" }, { status: 400 })
+  }
+
+  const allWallLengths = new Map(
+    candidates.map((wall) => [wall.id, lengthOf(wall)]),
+  )
+  for (const [id, length] of manualWallLengths) allWallLengths.set(id, length)
+  if (
+    manualOpenings.some((opening) => (
+      !/^MO\d{4,}$/.test(opening?.id)
+      || openingIds.has(opening.id)
+      || !allWallLengths.has(opening.wallId)
+      || !Number.isFinite(opening.startOffset)
+      || !Number.isFinite(opening.endOffset)
+      || opening.startOffset < 0
+      || opening.endOffset <= opening.startOffset
+      || opening.endOffset > allWallLengths.get(opening.wallId)
+      || !["door", "window"].includes(opening.kind)
+      || typeof opening.active !== "boolean"
+    ))
+  ) {
+    return Response.json({ error: "手绘门窗数据无效。" }, { status: 400 })
+  }
+
+  const recognized = checkpoint.recognized || checkpoint.detected || checkpoint.candidates
+  const recognizedWalls = new Map(recognized.walls.map((wall) => [wall.id, wall]))
+  const recognizedOpenings = new Map(
+    recognized.walls.flatMap((wall) => wall.openings.map((opening) => [opening.id, opening])),
+  )
   const previousWalls = new Map(
     (checkpoint.detected?.walls || candidates).map((wall) => [wall.id, wall]),
   )
+  const manualOpeningsByWall = new Map()
+  for (const opening of manualOpenings) {
+    manualOpeningsByWall.set(
+      opening.wallId,
+      [...(manualOpeningsByWall.get(opening.wallId) || []), opening],
+    )
+  }
   const walls = candidates
     .filter((wall) => wallEdits.get(wall.id))
     .map((candidate) => {
@@ -193,7 +318,8 @@ async function confirmConversion(request) {
           confidence: 1,
           evidence: ["用户确认"],
         }),
-        openings: candidate.openings
+        openings: [
+          ...candidate.openings
           .filter((opening) => openingEdits.get(opening.id) !== "ignore")
           .map((opening) => {
             const kind = openingEdits.get(opening.id)
@@ -208,8 +334,41 @@ async function confirmConversion(request) {
                   source_hint: "user",
                 }
           }),
+          ...(manualOpeningsByWall.get(candidate.id) || [])
+            .filter((opening) => opening.active)
+            .map((opening) => ({
+            id: opening.id,
+            kind: opening.kind,
+            start_offset: opening.startOffset,
+            end_offset: opening.endOffset,
+            confidence: 1,
+            evidence: ["用户手绘"],
+            source_hint: "user",
+          })),
+        ],
       }
     })
+    .concat(manualWalls.filter((wall) => wall.active).map((wall) => ({
+      id: wall.id,
+      start: wall.start,
+      end: wall.end,
+      thickness: wall.thickness,
+      source_layer: "USER_MANUAL",
+      confidence: 1,
+      evidence: ["用户手绘"],
+      wall_type: "cleanroom_panel_wall",
+      openings: (manualOpeningsByWall.get(wall.id) || [])
+        .filter((opening) => opening.active)
+        .map((opening) => ({
+        id: opening.id,
+        kind: opening.kind,
+        start_offset: opening.startOffset,
+        end_offset: opening.endOffset,
+        confidence: 1,
+        evidence: ["用户手绘"],
+        source_hint: "user",
+      })),
+    })))
   if (!walls.length) {
     return Response.json({ error: "至少需要保留一段墙体。" }, { status: 400 })
   }
@@ -218,6 +377,17 @@ async function confirmConversion(request) {
   for (const wall of walls) {
     const thickness = Math.round(wall.thickness)
     thicknessCounts.set(thickness, (thicknessCounts.get(thickness) || 0) + 1)
+  }
+  checkpoint.recognized = recognized
+  checkpoint.manual_edits = {
+    modified_walls: edits.walls
+      .filter((edit) => edit.active !== recognizedWalls.has(edit.id))
+      .map((edit) => ({ ...edit, source: "USER" })),
+    modified_openings: edits.openings
+      .filter((edit) => edit.kind !== (recognizedOpenings.get(edit.id)?.kind || "ignore"))
+      .map((edit) => ({ ...edit, source: "USER" })),
+    added_walls: manualWalls.map((wall) => ({ ...wall, source: "USER" })),
+    added_openings: manualOpenings.map((opening) => ({ ...opening, source: "USER" })),
   }
   checkpoint.detected = {
     ...checkpoint.candidates,
@@ -229,7 +399,7 @@ async function confirmConversion(request) {
     const modelPath = path.join(directory, "detected_model.json")
     const model = JSON.parse(await readFile(modelPath, "utf8"))
     model.recognition.manually_reviewed = true
-    model.walls = model.walls.map((wall) => {
+    model.walls = model.walls.filter((wall) => wallIds.has(wall.id)).map((wall) => {
       const active = wallEdits.get(wall.id)
       const wallChanged = active !== previousWalls.has(wall.id)
       return {
@@ -239,21 +409,62 @@ async function confirmConversion(request) {
           ? active ? "cleanroom_panel_wall" : "non_panel_wall"
           : wall.wall_type,
         ...(wallChanged ? { confidence: 1, evidence: ["用户确认"], source: "USER" } : {}),
-        openings: wall.openings.map((opening) => {
-          const kind = openingEdits.get(opening.id)
-          const finalKind = kind === "ignore" ? "other" : kind
-          return opening.kind === finalKind
-            ? opening
-            : {
-                ...opening,
-                kind: finalKind,
-                confidence: 1,
-                evidence: ["用户确认"],
-                source: "USER",
-              }
-        }),
+        openings: [
+          ...wall.openings.filter((opening) => openingIds.has(opening.id)).map((opening) => {
+            const kind = openingEdits.get(opening.id)
+            const finalKind = kind === "ignore" ? "other" : kind
+            return opening.kind === finalKind
+              ? opening
+              : {
+                  ...opening,
+                  kind: finalKind,
+                  confidence: 1,
+                  evidence: ["用户确认"],
+                  source: "USER",
+                }
+          }),
+          ...(manualOpeningsByWall.get(wall.id) || [])
+            .filter((opening) => opening.active && active)
+            .map((opening) => ({
+            id: opening.id,
+            kind: opening.kind,
+            source_hint: "user",
+            start_offset_mm: opening.startOffset,
+            end_offset_mm: opening.endOffset,
+            confidence: 1,
+            evidence: ["用户手绘"],
+            source: "USER",
+          })),
+        ],
       }
     })
+    model.walls.push(...manualWalls.filter((manualWall) => manualWall.active).map((manualWall) => {
+      const wall = walls.find((item) => item.id === manualWall.id)
+      return {
+        id: wall.id,
+        start: wall.start,
+        end: wall.end,
+        length_mm: lengthOf(wall),
+        thickness_mm: wall.thickness,
+        source_layer: wall.source_layer,
+        layer_color: null,
+        install_panel: true,
+        wall_type: wall.wall_type,
+        confidence: 1,
+        evidence: ["用户手绘"],
+        source: "USER",
+        openings: wall.openings.map((opening) => ({
+          id: opening.id,
+          kind: opening.kind,
+          source_hint: "user",
+          start_offset_mm: opening.start_offset,
+          end_offset_mm: opening.end_offset,
+          confidence: 1,
+          evidence: ["用户手绘"],
+          source: "USER",
+        })),
+      }
+    }))
     model.low_confidence_ids = model.walls.flatMap((wall) => [
       ...(wall.confidence < 0.85 ? [wall.id] : []),
       ...wall.openings
