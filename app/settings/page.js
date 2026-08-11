@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { Copy, Plus, Save, Star, Trash2 } from "lucide-react"
 
 import SiteHeader from "../site-header"
 
@@ -37,6 +38,10 @@ const CEILING_FIELDS = [
   ["large_room_ratio", "独立房间比例", "0–1", "面积达到总吊顶面积此比例的房间单独排板"],
   ["text_height", "吊顶标注字高", "mm", "吊顶板尺寸文字的高度"],
 ]
+
+const GROUP_CLASS = "mt-8 border-0 p-0 [&>legend]:mb-4 [&>legend]:flex [&>legend]:w-full [&>legend]:items-baseline [&>legend]:gap-3 [&>legend]:border-b [&>legend]:border-slate-200 [&>legend]:pb-3 [&>legend>span]:font-mono [&>legend>span]:text-[9px] [&>legend>span]:font-bold [&>legend>span]:text-[#ff6b2c] [&>legend>strong]:text-sm [&>legend>small]:ml-auto [&>legend>small]:hidden [&>legend>small]:text-[10px] [&>legend>small]:font-normal [&>legend>small]:text-slate-400 sm:[&>legend>small]:block"
+const GRID_CLASS = "grid gap-3 lg:grid-cols-2"
+const WIDE_FIELD_CLASS = "flex min-w-0 flex-col gap-3 border border-slate-200 bg-slate-50/60 p-4 sm:flex-row sm:items-center sm:justify-between [&>span]:min-w-0 [&_b]:block [&_b]:text-xs [&_b]:font-semibold [&_small]:mt-1 [&_small]:block [&_small]:text-[10px] [&_small]:leading-4 [&_small]:text-slate-400 [&>input]:h-10 [&>input]:w-full [&>input]:shrink-0 [&>input]:border [&>input]:border-slate-300 [&>input]:bg-white [&>input]:px-3 [&>input]:font-mono [&>input]:text-xs [&>input]:outline-none [&>input]:focus:border-[#153b5b] sm:[&>input]:w-56"
 
 function formFromPreset(preset) {
   return {
@@ -81,20 +86,21 @@ function presetFromForm(form) {
 function NumberField({ field, section, onChange }) {
   const [name, label, unit, help] = field
   return (
-    <label className="setting-field">
-      <span>
-        <b>{label}</b>
-        <small>{help}</small>
+    <label className="flex min-w-0 flex-col gap-3 border border-slate-200 bg-slate-50/60 p-4 sm:flex-row sm:items-center sm:justify-between">
+      <span className="min-w-0">
+        <b className="block text-xs font-semibold">{label}</b>
+        <small className="mt-1 block text-[10px] leading-4 text-slate-400">{help}</small>
       </span>
-      <span className="number-control">
+      <span className="flex h-10 w-full shrink-0 border border-slate-300 bg-white focus-within:border-[#153b5b] sm:w-36">
         <input
+          className="min-w-0 flex-1 bg-transparent px-3 text-right font-mono text-xs outline-none"
           type="number"
           step="any"
           value={section[name]}
           onChange={(event) => onChange(name, event.target.value)}
           required
         />
-        <i>{unit}</i>
+        <i className="grid min-w-10 place-items-center border-l border-slate-200 px-2 font-mono text-[9px] not-italic text-slate-400">{unit}</i>
       </span>
     </label>
   )
@@ -201,74 +207,63 @@ export default function SettingsPage() {
   const activePreset = catalog?.presets.find((preset) => preset.id === activeId)
 
   return (
-    <main className="workspace settings-workspace">
+    <div className="min-h-screen lg:flex">
       <SiteHeader active="settings" />
+      <main className="min-w-0 flex-1">
+        <header className="flex min-h-[76px] items-center justify-between border-b border-slate-200 bg-white px-5 sm:px-8">
+          <div><p className="font-mono text-[9px] font-bold tracking-[.18em] text-[#ff6b2c]">CONFIGURATION LIBRARY</p><h1 className="mt-1 text-xl font-bold tracking-tight">参数预设</h1></div>
+          <div className="text-right"><strong className="font-mono text-xl">{String(catalog?.presets.length || 0).padStart(2, "0")}</strong><small className="ml-2 text-[10px] text-slate-400">套可用参数</small></div>
+        </header>
 
-      <section className="settings-intro">
-        <div>
-          <p className="eyebrow">CONFIGURATION LIBRARY / 参数库</p>
-          <h1>把项目规则，<br />保存成可复用预设。</h1>
-          <p className="lede">
-            每个预设同时管理墙体识别、门窗判断、墙板与吊顶排板参数。转换图纸前选择一次，整条处理链使用同一套规则。
-          </p>
-        </div>
-        <div className="preset-index" aria-label="预设概览">
-          <span>PRESET REGISTER</span>
-          <strong>{String(catalog?.presets.length || 0).padStart(2, "0")}</strong>
-          <p>套可用参数</p>
-          <i>AI 连接密钥仍由服务器 .env 管理</i>
-        </div>
-      </section>
-
-      <section className="settings-shell">
-        <aside className="preset-rail">
-          <div className="preset-rail-heading">
+        <section className="grid min-h-[calc(100vh-76px)] xl:grid-cols-[300px_minmax(0,1fr)]">
+        <aside className="border-b border-slate-200 bg-[#e7ebef] p-4 xl:border-b-0 xl:border-r xl:p-5">
+          <div className="flex items-center justify-between border-b border-slate-300 pb-4">
             <div>
-              <span>预设目录</span>
-              <small>选择一套参数进行编辑</small>
+              <span className="block text-xs font-bold">预设目录</span>
+              <small className="mt-1 block text-[10px] text-slate-500">选择一套参数进行编辑</small>
             </div>
-            <button type="button" disabled={!activePreset} onClick={() => createPreset(activePreset)}>
-              + 新建
+            <button className="inline-flex items-center gap-1.5 bg-[#153b5b] px-3 py-2 text-xs font-semibold text-white hover:bg-[#0f2d46] disabled:opacity-40" type="button" disabled={!activePreset} onClick={() => createPreset(activePreset)}>
+              <Plus className="size-3.5" aria-hidden="true" />新建
             </button>
           </div>
-          <div className="preset-list">
-            {!catalog && <p className="preset-loading">正在读取参数库…</p>}
+          <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+            {!catalog && <p className="p-4 text-xs text-slate-400">正在读取参数库…</p>}
             {catalog?.presets.map((preset, index) => (
               <button
-                className={preset.id === activeId ? "is-active" : ""}
+                className={`relative min-w-0 border p-4 text-left transition-colors ${preset.id === activeId ? "border-[#153b5b] bg-white shadow-sm" : "border-transparent bg-white/40 hover:bg-white/70"}`}
                 type="button"
                 key={preset.id}
                 onClick={() => selectPreset(preset)}
               >
-                <span>P-{String(index + 1).padStart(2, "0")}</span>
-                <strong>{preset.name}</strong>
-                <small>
+                <span className="font-mono text-[9px] text-[#ff6b2c]">P-{String(index + 1).padStart(2, "0")}</span>
+                <strong className="mt-2 block truncate text-xs">{preset.name}</strong>
+                <small className="mt-2 block truncate font-mono text-[9px] text-slate-400">
                   墙厚 {preset.drawing.wall_thicknesses.join(" / ")} · 墙板 {preset.materials.primary_width} · 吊顶 {preset.ceiling.panel_width}
                 </small>
-                {preset.id === catalog.defaultPresetId && <i>DEFAULT</i>}
+                {preset.id === catalog.defaultPresetId && <i className="absolute right-3 top-3 bg-emerald-100 px-1.5 py-1 font-mono text-[8px] not-italic text-emerald-700">DEFAULT</i>}
               </button>
             ))}
           </div>
-          <div className="preset-rail-note">
-            <span>使用方式</span>
-            <p>保存后返回转换工作台，在“选择预设”中指定本次图纸使用的规则。</p>
+          <div className="mt-5 border-l-2 border-[#ff6b2c] pl-3 text-[10px] leading-5 text-slate-500">
+            <span className="font-bold text-slate-700">使用方式</span>
+            <p>保存后返回转换工作台，选择本次图纸使用的规则。</p>
           </div>
         </aside>
 
-        <form className="settings-form" onSubmit={save}>
+        <form className="min-w-0 bg-white p-5 sm:p-8 [&_textarea]:w-full [&_textarea]:resize-none [&_textarea]:border [&_textarea]:border-slate-300 [&_textarea]:px-3 [&_textarea]:py-2 [&_textarea]:text-xs [&_textarea]:outline-none [&_textarea]:focus:border-[#153b5b]" onSubmit={save}>
           {draft ? (
             <>
-              <div className="settings-form-heading">
-                <div>
-                  <p>{draft.id ? "EDIT PRESET" : "NEW PRESET"}</p>
+              <div className="flex flex-col gap-5 border-b border-slate-200 pb-6 lg:flex-row lg:items-start lg:justify-between">
+                <div className="max-w-2xl flex-1">
+                  <p className="font-mono text-[9px] tracking-[.16em] text-[#ff6b2c]">{draft.id ? "EDIT PRESET" : "NEW PRESET"}</p>
                   <input
-                    className="preset-name-input"
+                    className="mt-2 w-full border-0 border-b border-transparent bg-transparent p-0 text-3xl font-bold tracking-[-.04em] outline-none focus:border-slate-300"
                     value={draft.name}
                     onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
                     aria-label="预设名称"
                     required
                   />
-                  <textarea
+                  <textarea className="mt-3"
                     value={draft.description}
                     onChange={(event) => setDraft((current) => ({
                       ...current,
@@ -279,36 +274,37 @@ export default function SettingsPage() {
                     rows="2"
                   />
                 </div>
-                <div className="settings-form-actions">
+                <div className="flex flex-wrap gap-2 [&_button]:inline-flex [&_button]:items-center [&_button]:gap-1.5 [&_button]:border [&_button]:border-slate-300 [&_button]:bg-white [&_button]:px-3 [&_button]:py-2 [&_button]:text-[10px] [&_button]:font-semibold [&_button]:hover:bg-slate-50 [&_button]:disabled:opacity-40 [&_svg]:size-3.5">
                   {draft.id && (
                     <>
-                      <button type="button" onClick={() => createPreset(activePreset, true)}>复制</button>
-                      <button type="button" onClick={remove}>删除</button>
+                      <button type="button" onClick={() => createPreset(activePreset, true)}><Copy aria-hidden="true" />复制</button>
+                      <button type="button" onClick={remove}><Trash2 aria-hidden="true" />删除</button>
                       <button
                         type="button"
                         disabled={catalog.defaultPresetId === activeId}
                         onClick={setDefault}
                       >
+                        <Star aria-hidden="true" />
                         {catalog.defaultPresetId === activeId ? "当前默认" : "设为默认"}
                       </button>
                     </>
                   )}
-                  <button className="save-preset" type="submit" disabled={notice.type === "saving"}>
-                    保存预设
+                  <button className="!border-[#ff6b2c] !bg-[#ff6b2c] !text-white hover:!bg-[#e9551b]" type="submit" disabled={notice.type === "saving"}>
+                    <Save aria-hidden="true" />保存预设
                   </button>
                 </div>
               </div>
 
-              {notice.message && <p className={`settings-notice is-${notice.type}`}>{notice.message}</p>}
+              {notice.message && <p className={`mt-4 border-l-4 p-3 text-xs ${notice.type === "error" ? "border-red-500 bg-red-50 text-red-700" : notice.type === "success" ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-sky-500 bg-sky-50 text-sky-700"}`}>{notice.message}</p>}
 
-              <fieldset className="settings-group">
+              <fieldset className={GROUP_CLASS}>
                 <legend>
                   <span>01</span>
                   <strong>墙体识别</strong>
                   <small>控制双线墙候选的筛选与几何合并</small>
                 </legend>
-                <div className="settings-grid">
-                  <label className="setting-field setting-field-wide">
+                <div className={GRID_CLASS}>
+                  <label className={WIDE_FIELD_CLASS}>
                     <span>
                       <b>墙体 ACI 颜色</b>
                       <small>本地模式只提取这些颜色；AI 模式把它们作为可靠碎线依据</small>
@@ -321,7 +317,7 @@ export default function SettingsPage() {
                       required
                     />
                   </label>
-                  <label className="setting-field setting-field-wide">
+                  <label className={WIDE_FIELD_CLASS}>
                     <span>
                       <b>允许墙厚</b>
                       <small>使用逗号分隔多个厚度，单位 mm</small>
@@ -345,13 +341,13 @@ export default function SettingsPage() {
                 </div>
               </fieldset>
 
-              <fieldset className="settings-group">
+              <fieldset className={GROUP_CLASS}>
                 <legend>
                   <span>02</span>
                   <strong>门窗与交接</strong>
                   <small>控制洞口尺度、对齐判断和墙体端部预留</small>
                 </legend>
-                <div className="settings-grid">
+                <div className={GRID_CLASS}>
                   {OPENING_FIELDS.map((field) => (
                     <NumberField
                       field={field}
@@ -363,14 +359,14 @@ export default function SettingsPage() {
                 </div>
               </fieldset>
 
-              <fieldset className="settings-group">
+              <fieldset className={GROUP_CLASS}>
                 <legend>
                   <span>03</span>
                   <strong>墙板材料与排板</strong>
                   <small>替代原来的 input/materials.json 和临时材料文件</small>
                 </legend>
-                <div className="settings-grid">
-                  <label className="setting-field setting-field-wide">
+                <div className={GRID_CLASS}>
+                  <label className={WIDE_FIELD_CLASS}>
                     <span>
                       <b>标准板宽</b>
                       <small>使用逗号分隔多个板宽，单位 mm</small>
@@ -394,13 +390,13 @@ export default function SettingsPage() {
                 </div>
               </fieldset>
 
-              <fieldset className="settings-group">
+              <fieldset className={GROUP_CLASS}>
                 <legend>
                   <span>04</span>
                   <strong>吊顶排板</strong>
                   <small>控制吊顶板规格、切分、区域分组与标注</small>
                 </legend>
-                <div className="settings-grid">
+                <div className={GRID_CLASS}>
                   {CEILING_FIELDS.map((field) => (
                     <NumberField
                       field={field}
@@ -412,13 +408,13 @@ export default function SettingsPage() {
                 </div>
               </fieldset>
 
-              <fieldset className="settings-group">
+              <fieldset className={GROUP_CLASS}>
                 <legend>
                   <span>05</span>
                   <strong>图纸标注</strong>
                   <small>控制墙板输出图中的板宽文字尺寸和离墙距离</small>
                 </legend>
-                <div className="settings-grid">
+                <div className={GRID_CLASS}>
                   <NumberField
                     field={["text_height", "标注字高", "mm", "输出 DXF 中的板宽文字高度"]}
                     section={draft.drawing}
@@ -433,18 +429,13 @@ export default function SettingsPage() {
               </fieldset>
             </>
           ) : (
-            <div className="settings-empty">
-              <strong>参数库尚未就绪</strong>
-              <p>{notice.message || "正在读取预设。"}</p>
+            <div className="grid min-h-72 place-items-center border border-dashed border-slate-200 bg-slate-50 text-center">
+              <div><strong className="text-sm">参数库尚未就绪</strong><p className="mt-2 text-xs text-slate-400">{notice.message || "正在读取预设。"}</p></div>
             </div>
           )}
         </form>
-      </section>
-
-      <footer>
-        <span>CAD MASTER / PRESET LIBRARY</span>
-        <span>预设保存在当前项目的 data/db/cad-master.sqlite</span>
-      </footer>
-    </main>
+        </section>
+      </main>
+    </div>
   )
 }

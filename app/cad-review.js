@@ -1,6 +1,16 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import {
+  AppWindow,
+  Ban,
+  Check,
+  DoorOpen,
+  PencilLine,
+  RotateCcw,
+  Undo2,
+  X,
+} from "lucide-react"
 
 import { matchOpeningToWall, rectangleToWall } from "./cad-review-geometry"
 
@@ -382,14 +392,16 @@ export default function CadReview({ walls, entityMap, reviewUrl, onChange }) {
   const drawingLabel = drawing === "wall" ? "正在画墙：点击矩形两个对角点"
     : drawing === "door" ? "正在画门：点击洞口两个端点"
       : drawing === "window" ? "正在画窗：点击洞口两个端点"
-        : "直接绘制门窗，系统将自动匹配墙体"
+        : selection?.type === "wall" ? "已选择墙面候选"
+          : selection?.type === "opening" ? "已选择门窗候选"
+            : "请在图纸中点击或框选候选"
 
   return (
-    <div className="wall-preview">
-      <div className="cad-viewer-shell">
+    <div className="overflow-hidden border border-slate-200 bg-slate-50">
+      <div className="relative h-[420px] min-h-[320px] bg-[#08111b] lg:h-[560px]">
         <div
           ref={containerRef}
-          className="cad-viewer"
+          className="size-full outline-none focus:ring-2 focus:ring-inset focus:ring-[#ff6b2c]"
           tabIndex="0"
           onKeyDown={(event) => {
             if (event.key === "Escape") cancelDrawing()
@@ -397,69 +409,34 @@ export default function CadReview({ walls, entityMap, reviewUrl, onChange }) {
           }}
         />
         {viewerState !== "ready" && (
-          <div className="cad-viewer-state">
+          <div className="absolute inset-0 grid place-items-center bg-[#08111b] font-mono text-xs text-slate-400">
             {viewerState === "loading" ? "正在载入 CAD 查看器…" : viewerState}
           </div>
         )}
       </div>
-      <div className="cad-draw-toolbar">
-        <div>
-          <button type="button" aria-pressed={drawing === "wall"} disabled={viewerState !== "ready"} onClick={() => startDrawing("wall")}>画墙</button>
-          <button type="button" aria-pressed={drawing === "door"} disabled={viewerState !== "ready"} onClick={() => startDrawing("door")}>画门</button>
-          <button type="button" aria-pressed={drawing === "window"} disabled={viewerState !== "ready"} onClick={() => startDrawing("window")}>画窗</button>
-          <button type="button" disabled={!drawing} onClick={cancelDrawing}>取消绘制</button>
+      <div className="flex flex-col gap-3 border-t border-slate-700 bg-[#111923] p-3 xl:flex-row xl:items-center xl:justify-between">
+        <div className="flex items-center gap-1 overflow-x-auto whitespace-nowrap [&_button]:inline-flex [&_button]:shrink-0 [&_button]:items-center [&_button]:gap-1.5 [&_button]:border [&_button]:border-white/15 [&_button]:px-3 [&_button]:py-2 [&_button]:text-[10px] [&_button]:font-semibold [&_button]:text-slate-300 [&_button]:hover:bg-white/10 [&_button]:disabled:cursor-not-allowed [&_button]:disabled:opacity-30 [&_button[aria-pressed=true]]:border-[#ff6b2c] [&_button[aria-pressed=true]]:bg-[#ff6b2c] [&_button[aria-pressed=true]]:text-white [&_svg]:size-3.5">
+          <button type="button" aria-pressed={drawing === "wall"} disabled={viewerState !== "ready"} onClick={() => startDrawing("wall")}><PencilLine aria-hidden="true" />画墙</button>
+          <button type="button" aria-pressed={drawing === "door"} disabled={viewerState !== "ready"} onClick={() => startDrawing("door")}><DoorOpen aria-hidden="true" />画门</button>
+          <button type="button" aria-pressed={drawing === "window"} disabled={viewerState !== "ready"} onClick={() => startDrawing("window")}><AppWindow aria-hidden="true" />画窗</button>
+          <button type="button" disabled={!drawing} onClick={cancelDrawing}><X aria-hidden="true" />取消</button>
+          <span className="mx-1 h-5 w-px shrink-0 bg-white/15" aria-hidden="true" />
+          <button type="button" disabled={selection?.type !== "wall"} onClick={() => classify("wall")}><Check aria-hidden="true" />设为墙面</button>
+          <button type="button" disabled={selection?.type !== "opening"} onClick={() => classify("door")}><DoorOpen aria-hidden="true" />设为门</button>
+          <button type="button" disabled={selection?.type !== "opening"} onClick={() => classify("window")}><AppWindow aria-hidden="true" />设为窗</button>
+          <button className="enabled:!text-red-300" type="button" disabled={!selection} onClick={() => classify("ignore")}><Ban aria-hidden="true" />设为不要</button>
+          <span className="mx-1 h-5 w-px shrink-0 bg-white/15" aria-hidden="true" />
+          <button type="button" disabled={!historyRef.current.length} onClick={undo}><Undo2 aria-hidden="true" />撤销</button>
+          <button type="button" onClick={reset}><RotateCcw aria-hidden="true" />恢复识别结果</button>
         </div>
-        <span>{drawingLabel}</span>
+        <span className="font-mono text-[9px] text-slate-500">{drawingLabel}</span>
       </div>
-      <p className="cad-viewer-help">滚轮缩放 · 中键拖动平移 · 单击或框选候选 · Esc 取消绘制</p>
-      <div className="candidate-editor">
-        <label>
-          <span>当前候选</span>
-          <select
-            value={selection ? `${selection.type}:${selection.id}` : ""}
-            onChange={(event) => {
-              const [type, id] = event.target.value.split(":")
-              const wall = type === "wall"
-                ? walls.find((item) => item.id === id)
-                : walls.find((item) => item.openings.some((opening) => opening.id === id))
-              if (wall) selectItem({ type, id, wallId: wall.id })
-              else setSelection(null)
-            }}
-          >
-            <option value="">点击图形或选择候选</option>
-            {walls.map((wall) => (
-              <option key={wall.id} value={`wall:${wall.id}`}>墙段 {wall.id}</option>
-            ))}
-            {walls.flatMap((wall) => wall.openings.map((opening) => (
-              <option key={opening.id} value={`opening:${opening.id}`}>
-                洞口 {opening.id} / 所属 {wall.id}
-              </option>
-            )))}
-          </select>
-        </label>
-        {selection?.type === "wall" && (
-          <div className="candidate-actions">
-            <button type="button" onClick={() => classify("wall")}>设为墙面</button>
-            <button className="ignore-action" type="button" onClick={() => classify("ignore")}>设为不要</button>
-          </div>
-        )}
-        {selection?.type === "opening" && (
-          <div className="candidate-actions">
-            <button type="button" onClick={() => classify("door")}>设为门</button>
-            <button type="button" onClick={() => classify("window")}>设为窗</button>
-            <button className="ignore-action" type="button" onClick={() => classify("ignore")}>设为不要</button>
-          </div>
-        )}
-        <div className="candidate-history">
-          <button type="button" disabled={!historyRef.current.length} onClick={undo}>撤销</button>
-          <button type="button" onClick={reset}>恢复识别结果</button>
-        </div>
-      </div>
-      <div className="preview-summary">
-        <span><i className="legend-wall" />墙面 {walls.filter((wall) => wall.active).length}</span>
-        <span><i className="legend-door" />门 {activeOpenings.filter((item) => item.kind === "door").length}</span>
-        <span><i className="legend-window" />窗 {activeOpenings.filter((item) => item.kind === "window").length}</span>
-        <span><i className="legend-ignore" />灰色为不要</span>
+      <p className="border-b border-slate-200 bg-slate-100 px-4 py-2 font-mono text-[9px] text-slate-400">滚轮缩放 · 中键拖动平移 · 单击或框选候选 · Esc 取消绘制</p>
+      <div className="flex flex-wrap gap-x-5 gap-y-2 border-t border-slate-200 bg-slate-50 px-4 py-3 text-[10px] text-slate-500 [&_span]:flex [&_span]:items-center [&_span]:gap-2 [&_i]:size-2 [&_i]:rounded-full">
+        <span><i className="bg-emerald-400" />墙面 {walls.filter((wall) => wall.active).length}</span>
+        <span><i className="bg-yellow-400" />门 {activeOpenings.filter((item) => item.kind === "door").length}</span>
+        <span><i className="bg-pink-400" />窗 {activeOpenings.filter((item) => item.kind === "window").length}</span>
+        <span><i className="bg-slate-400" />灰色为不要</span>
       </div>
     </div>
   )
