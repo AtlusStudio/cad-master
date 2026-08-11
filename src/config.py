@@ -40,4 +40,15 @@ class MaterialConfig:
     end_tolerance: float = 2.5
 
 
+@dataclass(frozen=True)
+class CeilingConfig:
+    panel_width: float = 1180.0
+    max_length: float = 3000.0
+    joint_gap: float = 3.0
+    min_cut_width: float = 150.0
+    large_room_ratio: float = 0.15
+    text_height: float = 125.0
+
+
 DEFAULT_CONFIG = DrawingConfig()
+DEFAULT_CEILING_CONFIG = CeilingConfig()

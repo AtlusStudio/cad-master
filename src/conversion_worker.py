@@ -13,7 +13,7 @@ from .ai_recognizer import (
     request_recognition,
 )
 from .ceiling_layout import calculate_ceiling_layout, draw_ceiling_layout
-from .config import DEFAULT_CONFIG, MaterialConfig
+from .config import CeilingConfig, DrawingConfig, MaterialConfig
 from .dxf_reader import (
     ensure_panel_layers,
     read_dxf,
@@ -43,19 +43,49 @@ def load_env() -> None:
             os.environ[name] = value.strip().strip('"').strip("'")
 
 
-def load_materials(path: str | Path) -> MaterialConfig:
+def load_preset(path: str | Path) -> tuple[DrawingConfig, MaterialConfig, CeilingConfig]:
     source = Path(path)
     if not source.is_file():
-        raise FileNotFoundError(f"找不到材料配置: {source}")
+        raise FileNotFoundError(f"找不到设置预设: {source}")
     data = json.loads(source.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
-        raise ValueError("materials.json 顶层必须是对象")
-    widths = tuple(float(value) for value in data.get("standard_widths", ()))
-    joint_gap = float(data.get("joint_gap", 3.0))
-    primary_width = float(data.get("primary_width", 1180.0))
-    min_cut_width = float(data.get("min_cut_width", 150.0))
-    cut_step = float(data.get("cut_step", 5.0))
-    end_tolerance = float(data.get("end_tolerance", 2.5))
+        raise ValueError("设置预设顶层必须是对象")
+    drawing_data = data.get("drawing")
+    materials_data = data.get("materials")
+    ceiling_data = data.get("ceiling")
+    if not all(isinstance(item, dict) for item in (drawing_data, materials_data, ceiling_data)):
+        raise ValueError("设置预设必须包含 drawing、materials 和 ceiling")
+
+    wall_colors = tuple(int(value) for value in drawing_data.get("wall_colors", ()))
+    wall_thicknesses = tuple(float(value) for value in drawing_data.get("wall_thicknesses", ()))
+    if not wall_colors or any(color < 1 or color > 255 for color in wall_colors):
+        raise ValueError("wall_colors 必须是 1–255 的 ACI 颜色数组")
+    if not wall_thicknesses or any(value <= 0 for value in wall_thicknesses):
+        raise ValueError("wall_thicknesses 必须是正数数组")
+    drawing = DrawingConfig(
+        snap_tolerance=float(drawing_data["snap_tolerance"]),
+        angle_tolerance=float(drawing_data["angle_tolerance"]),
+        parallel_overlap_ratio=float(drawing_data["parallel_overlap_ratio"]),
+        wall_colors=wall_colors,
+        wall_thicknesses=wall_thicknesses,
+        wall_thickness_tolerance=float(drawing_data["wall_thickness_tolerance"]),
+        min_wall_length=float(drawing_data["min_wall_length"]),
+        opening_min_width=float(drawing_data["opening_min_width"]),
+        opening_max_width=float(drawing_data["opening_max_width"]),
+        opening_jamb_tolerance=float(drawing_data["opening_jamb_tolerance"]),
+        opening_alignment_tolerance=float(drawing_data["opening_alignment_tolerance"]),
+        text_height=float(drawing_data["text_height"]),
+        text_offset=float(drawing_data["text_offset"]),
+        junction_reserve=float(drawing_data["junction_reserve"]),
+        tolerance=float(drawing_data["tolerance"]),
+    )
+
+    widths = tuple(float(value) for value in materials_data.get("standard_widths", ()))
+    joint_gap = float(materials_data.get("joint_gap", 3.0))
+    primary_width = float(materials_data.get("primary_width", 1180.0))
+    min_cut_width = float(materials_data.get("min_cut_width", 150.0))
+    cut_step = float(materials_data.get("cut_step", 5.0))
+    end_tolerance = float(materials_data.get("end_tolerance", 2.5))
     if not widths or any(width <= 0 for width in widths):
         raise ValueError("standard_widths 必须是正数数组")
     if joint_gap < 0:
@@ -64,13 +94,35 @@ def load_materials(path: str | Path) -> MaterialConfig:
         raise ValueError("primary_width 必须包含在 standard_widths 中")
     if min_cut_width <= 0 or cut_step <= 0 or end_tolerance < 0:
         raise ValueError("min_cut_width、cut_step 必须为正数，end_tolerance 不能为负数")
-    return MaterialConfig(
-        widths,
-        joint_gap,
-        primary_width,
-        min_cut_width,
-        cut_step,
-        end_tolerance,
+
+    ceiling = CeilingConfig(
+        panel_width=float(ceiling_data["panel_width"]),
+        max_length=float(ceiling_data["max_length"]),
+        joint_gap=float(ceiling_data["joint_gap"]),
+        min_cut_width=float(ceiling_data["min_cut_width"]),
+        large_room_ratio=float(ceiling_data["large_room_ratio"]),
+        text_height=float(ceiling_data["text_height"]),
+    )
+    if (
+        ceiling.panel_width <= 0
+        or ceiling.max_length <= 0
+        or ceiling.joint_gap < 0
+        or ceiling.min_cut_width <= 0
+        or not 0 < ceiling.large_room_ratio <= 1
+        or ceiling.text_height <= 0
+    ):
+        raise ValueError("吊顶板规格、面积比例或标注参数无效")
+    return (
+        drawing,
+        MaterialConfig(
+            widths,
+            joint_gap,
+            primary_width,
+            min_cut_width,
+            cut_step,
+            end_tolerance,
+        ),
+        ceiling,
     )
 
 
@@ -79,7 +131,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stage", required=True, choices=("detect", "recognize", "generate"))
     parser.add_argument("--mode", required=True, choices=("ai", "local"))
     parser.add_argument("--input", required=True)
-    parser.add_argument("--materials", required=True)
+    parser.add_argument("--preset", required=True)
     parser.add_argument("--output", required=True)
     return parser.parse_args()
 
@@ -154,6 +206,7 @@ def _write_review(
 
 
 def detect_stage(args: argparse.Namespace) -> None:
+    drawing, _, _ = load_preset(args.preset)
     doc = read_dxf(args.input)
     drawing_path = (
         Path(args.input).with_suffix(".dxf")
@@ -162,7 +215,7 @@ def detect_stage(args: argparse.Namespace) -> None:
     )
     candidates = detect_walls(
         doc,
-        DEFAULT_CONFIG,
+        drawing,
         include_all_colors=args.mode == "ai",
     )
     if not candidates.walls:
@@ -228,27 +281,28 @@ def generate_stage(args: argparse.Namespace) -> None:
     if "detected" not in checkpoint:
         raise ValueError("缺少语义识别阶段的 checkpoint")
     detected = _detection_from_data(checkpoint["detected"])
-    materials = load_materials(args.materials)
+    drawing, materials, ceiling = load_preset(args.preset)
     output = Path(args.output)
     ceiling_output = output.parent / "ceiling_panel_layout_result.dxf"
     doc = read_dxf(checkpoint["drawing_path"])
     detected_walls_output = output.parent / "detected_walls.dxf"
     save_detected_walls(doc, detected.walls, detected_walls_output)
 
-    obstacles = collect_obstacle_boxes(doc, DEFAULT_CONFIG.wall_colors)
+    obstacles = collect_obstacle_boxes(doc, drawing.wall_colors)
     ensure_panel_layers(doc)
     all_panels = []
     for wall in detected.walls:
-        panels = layout_wall(wall, materials)
-        draw_wall_layout(doc, wall, panels, obstacles)
+        panels = layout_wall(wall, materials, drawing.tolerance)
+        draw_wall_layout(doc, wall, panels, obstacles, drawing)
         all_panels.extend(panels)
 
     ceiling_doc = read_dxf(checkpoint["drawing_path"])
     ceiling_layout = calculate_ceiling_layout(
         detected.walls,
-        DEFAULT_CONFIG.junction_reserve,
+        drawing.junction_reserve,
+        ceiling,
     )
-    draw_ceiling_layout(ceiling_doc, ceiling_layout)
+    draw_ceiling_layout(ceiling_doc, ceiling_layout, ceiling)
 
     save_dxf(doc, output)
     save_dxf(ceiling_doc, ceiling_output)

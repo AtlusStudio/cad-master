@@ -42,37 +42,43 @@ AI 只接收程序提取的图层、图块、附近文字和精确几何摘要�
 
 ### CMS 管理界面
 
-安装前端依赖后启动 Next.js：
+使用 Node.js 22.5+，安装前端依赖后启动 Next.js：
 
 ```bash
 pnpm dev
 ```
 
-打开页面后上传 DXF 或 DWG，可直接点击“AI 转换”或“本地转换”。材料配置可选；未上传时使用
-`input/materials.json`。每次任务的图纸、材料清单和识别结果分别保存在 `output/gui/<任务号>/`，
-并可在页面中直接下载。AI 模式仍读取项目根目录的 `.env`，密钥不会发送到浏览器。
+打开页面后上传 DXF 或 DWG，选择一套设置预设，再点击“AI 转换”或“本地转换”。预设在
+`/settings` 页面统一管理，同时包含墙体/门窗识别规则、墙板与吊顶排板参数和图纸标注参数；可创建多套预设，
+并指定默认预设。预设保存在 `data/db/cad-master.sqlite`，首次打开页面时会自动建表并写入默认预设。
+每次任务会把所选预设快照保存到任务目录。
+
+每次任务的图纸、材料清单和识别结果分别保存在 `data/jobs/<任务号>/`，识别缓存保存在
+`data/cache/`，结果可在页面中直接下载。
+AI 模式仍读取项目根目录的 `.env`，密钥不会发送到浏览器，也不会写入设置预设。
 
 AI 不直接读取 CAD 图像，也不自行创建墙体坐标；它只对程序从 CAD 几何中恢复出的墙体和洞口候选做语义判断。AI 与本地模式共用同一套墙体几何恢复结果。
 
 ### 本地识别参数
 
-本地模式由 CMS 的“本地转换”按钮进入，不调用外部模型。未上传材料配置时使用 `input/materials.json`。
+本地模式由 CMS 的“本地转换”按钮进入，不调用外部模型，并使用转换工作台中选择的设置预设。
 
 识别不依赖图层名称，只读取可见实体，并按颜色和双线墙厚筛选：
 
 输出：
 
-- `output/gui/<任务号>/panel_layout_result.dxf`
-- `output/gui/<任务号>/ceiling_panel_layout_result.dxf`（最外层墙面围成区域的吊顶彩钢板排版）
-- `output/gui/<任务号>/detected_walls.dxf`（完整展示所有参与计算的墙面；绿色为连续计算范围，黄色为门洞，粉色为窗洞）
-- `output/gui/<任务号>/detected_model.json`（AI 模式的权威识别数据，包含全部候选、决定、置信度和依据）
-- `output/gui/<任务号>/ai_recognition.json`（AI 模式的原始结构化决定，后续人工复核可复用）
-- `output/gui/<任务号>/panel_schedule.csv`
-- `output/gui/<任务号>/panel_schedule.json`
+- `data/jobs/<任务号>/panel_layout_result.dxf`
+- `data/jobs/<任务号>/ceiling_panel_layout_result.dxf`（最外层墙面围成区域的吊顶彩钢板排版）
+- `data/jobs/<任务号>/detected_walls.dxf`（完整展示所有参与计算的墙面；绿色为连续计算范围，黄色为门洞，粉色为窗洞）
+- `data/jobs/<任务号>/detected_model.json`（AI 模式的权威识别数据，包含全部候选、决定、置信度和依据）
+- `data/jobs/<任务号>/ai_recognition.json`（AI 模式的原始结构化决定，后续人工复核可复用）
+- `data/jobs/<任务号>/panel_schedule.csv`
+- `data/jobs/<任务号>/panel_schedule.json`
+- `data/jobs/<任务号>/preset.json`（本次任务实际使用的设置预设快照）
 
-## 材料配置
+## 设置预设
 
-单位为 mm：
+预设中的材料参数单位为 mm：
 
 ```json
 {
@@ -84,6 +90,8 @@ AI 不直接读取 CAD 图像，也不自行创建墙体坐标；它只对程序
   "end_tolerance": 2.5
 }
 ```
+
+上述参数现在与识别规则一起由 `/settings` 管理，不再需要在转换时上传 `materials.json`。
 
 配置中的尺寸是实际板宽。精确标准板组合仍按“板宽 + 3 mm 板缝”匹配；需要收边时，墙段两端各预留一道板缝后计算用板宽度。`primary_width` 必须存在于标准板宽数组中。普通墙默认只使用 1180 主板和 580 辅助板；980、1160、1197 等规格仅在当前项目明确需要时加入 `standard_widths`，避免把回风墙板或吊顶盲板规格混入普通墙。
 

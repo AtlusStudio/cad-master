@@ -10,13 +10,10 @@ from ezdxf.enums import MTextEntityAlignment
 from ezdxf.math import Vec2
 from ezdxf.math.clipping import ConcaveClippingPolygon2d
 
+from .config import DEFAULT_CEILING_CONFIG, CeilingConfig
 from .geometry import Point
 from .wall_detector import WallSegment
 
-CEILING_PANEL_WIDTH = 1180.0
-CEILING_MAX_LENGTH = 3000.0
-CEILING_JOINT_GAP = 3.0
-CEILING_MIN_CUT = 150.0
 CEILING_LAYERS = {
     "CEILING_BOUNDARY": 3,
     "CEILING_PANEL": 2,
@@ -30,13 +27,13 @@ class CeilingPanel:
     vertices: tuple[Point, ...]
     width: float
     length: float
+    length_axis: Point
 
 
 @dataclass(frozen=True)
 class CeilingLayout:
-    boundary: tuple[Point, ...]
+    boundaries: tuple[tuple[Point, ...], ...]
     panels: tuple[CeilingPanel, ...]
-    length_axis: Point
 
 
 @dataclass(frozen=True)
@@ -61,11 +58,11 @@ def _signed_area(vertices: list[Point] | tuple[Point, ...]) -> float:
     ) / 2.0
 
 
-def _segments(span: float, maximum: float) -> list[float]:
-    count = max(1, ceil((span + CEILING_JOINT_GAP) / (maximum + CEILING_JOINT_GAP)))
-    usable = span - CEILING_JOINT_GAP * (count - 1)
+def _segments(span: float, maximum: float, config: CeilingConfig) -> list[float]:
+    count = max(1, ceil((span + config.joint_gap) / (maximum + config.joint_gap)))
+    usable = span - config.joint_gap * (count - 1)
     last = usable - maximum * (count - 1)
-    if count == 1 or last >= CEILING_MIN_CUT:
+    if count == 1 or last >= config.min_cut_width:
         return [maximum] * (count - 1) + [last]
     edge = (usable - maximum * (count - 2)) / 2.0
     return [edge, *([maximum] * (count - 2)), edge]
@@ -213,6 +210,30 @@ def _outer_boundary(
     return ring, thicknesses
 
 
+def _room_groups(faces: list[list[Point]]) -> list[list[list[Point]]]:
+    edge_sets = [
+        {_edge_key(start, end) for start, end in zip(face, (*face[1:], face[0]))}
+        for face in faces
+    ]
+    remaining = set(range(len(faces)))
+    groups: list[list[list[Point]]] = []
+    # ponytail: quadratic adjacency scan is enough for normal room counts;
+    # index edges only if floor plans grow to hundreds of rooms.
+    while remaining:
+        pending = [remaining.pop()]
+        group: list[int] = []
+        while pending:
+            current = pending.pop()
+            group.append(current)
+            neighbours = {
+                index for index in remaining if edge_sets[current] & edge_sets[index]
+            }
+            remaining.difference_update(neighbours)
+            pending.extend(neighbours)
+        groups.append([faces[index] for index in group])
+    return groups
+
+
 def _line_intersection(first: tuple[Point, Point], second: tuple[Point, Point]) -> Point | None:
     first_vector = first[1][0] - first[0][0], first[1][1] - first[0][1]
     second_vector = second[1][0] - second[0][0], second[1][1] - second[0][1]
@@ -282,10 +303,38 @@ def _axes(boundary: list[Point]) -> tuple[Point, Point]:
 def calculate_ceiling_layout(
     walls: Iterable[WallSegment],
     junction_reserve: float = 5.0,
+    config: CeilingConfig = DEFAULT_CEILING_CONFIG,
 ) -> CeilingLayout:
     edges = _restore_graph(walls, junction_reserve)
-    boundary, thicknesses = _outer_boundary(_bounded_faces(edges), edges)
-    inner = _inner_boundary(boundary, thicknesses)
+    rooms = _bounded_faces(edges)
+    total_area = sum(abs(_signed_area(room)) for room in rooms)
+    large_rooms = [
+        room
+        for room in rooms
+        if abs(_signed_area(room)) >= total_area * config.large_room_ratio
+    ]
+    small_rooms = [room for room in rooms if room not in large_rooms]
+    regions = [[room] for room in large_rooms]
+    regions.sort(key=lambda group: abs(_signed_area(group[0])), reverse=True)
+    regions.extend(
+        sorted(
+            _room_groups(small_rooms),
+            key=lambda group: sum(abs(_signed_area(room)) for room in group),
+            reverse=True,
+        )
+    )
+
+    boundaries: list[tuple[Point, ...]] = []
+    panels: list[CeilingPanel] = []
+    for region in regions:
+        boundary, thicknesses = _outer_boundary(region, edges)
+        inner = _inner_boundary(boundary, thicknesses)
+        boundaries.append(tuple(inner))
+        panels.extend(_layout_region(inner, config))
+    return CeilingLayout(tuple(boundaries), tuple(panels))
+
+
+def _layout_region(inner: list[Point], config: CeilingConfig) -> list[CeilingPanel]:
     length_axis, width_axis = _axes(inner)
 
     local_boundary = [
@@ -302,9 +351,9 @@ def calculate_ceiling_layout(
     max_y = max(point.y for point in local_boundary)
     panels: list[CeilingPanel] = []
     x = min_x
-    for panel_length in _segments(max_x - min_x, CEILING_MAX_LENGTH):
+    for panel_length in _segments(max_x - min_x, config.max_length, config):
         y = min_y
-        for panel_width in _segments(max_y - min_y, CEILING_PANEL_WIDTH):
+        for panel_width in _segments(max_y - min_y, config.panel_width, config):
             rectangle = (
                 Vec2(x, y),
                 Vec2(x + panel_length, y),
@@ -329,25 +378,31 @@ def calculate_ceiling_layout(
                         ),
                         piece_max_y - piece_min_y,
                         piece_max_x - piece_min_x,
+                        length_axis,
                     )
                 )
-            y += panel_width + CEILING_JOINT_GAP
-        x += panel_length + CEILING_JOINT_GAP
-    return CeilingLayout(tuple(inner), tuple(panels), length_axis)
+            y += panel_width + config.joint_gap
+        x += panel_length + config.joint_gap
+    return panels
 
 
-def draw_ceiling_layout(doc: Drawing, layout: CeilingLayout) -> None:
+def draw_ceiling_layout(
+    doc: Drawing,
+    layout: CeilingLayout,
+    config: CeilingConfig = DEFAULT_CEILING_CONFIG,
+) -> None:
     for name, color in CEILING_LAYERS.items():
         if name not in doc.layers:
             doc.layers.add(name, color=color)
     modelspace = doc.modelspace()
-    modelspace.add_lwpolyline(
-        layout.boundary,
-        close=True,
-        dxfattribs={"layer": "CEILING_BOUNDARY"},
-    )
-    rotation = degrees(atan2(layout.length_axis[1], layout.length_axis[0]))
+    for boundary in layout.boundaries:
+        modelspace.add_lwpolyline(
+            boundary,
+            close=True,
+            dxfattribs={"layer": "CEILING_BOUNDARY"},
+        )
     for panel in layout.panels:
+        rotation = degrees(atan2(panel.length_axis[1], panel.length_axis[0]))
         modelspace.add_lwpolyline(
             panel.vertices,
             close=True,
@@ -355,7 +410,7 @@ def draw_ceiling_layout(doc: Drawing, layout: CeilingLayout) -> None:
         )
         modelspace.add_mtext(
             f"{round(panel.width)}×{round(panel.length)}",
-            dxfattribs={"layer": "CEILING_TEXT", "char_height": 125.0},
+            dxfattribs={"layer": "CEILING_TEXT", "char_height": config.text_height},
         ).set_location(
             _centroid(panel.vertices),
             rotation=rotation,

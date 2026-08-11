@@ -4,14 +4,12 @@ __pycache__/
 build/
 dist/
 wheels/
-*.egg-info
-
-# Files
-.env
-file/
-input/
-output/
 
 # Next.js
 /node_modules
 /.next/
+
+# Files
+.env
+file/
+data/

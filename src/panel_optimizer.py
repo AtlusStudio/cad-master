@@ -59,6 +59,7 @@ def optimize_span(
     min_cut_width: float = 150.0,
     cut_step: float = 5.0,
     end_tolerance: float = 2.5,
+    tolerance: float = DEFAULT_CONFIG.tolerance,
 ) -> list[PanelSize]:
     """Prefer an all-standard layout, otherwise use valid rounded end cuts."""
     if length <= 0:
@@ -82,7 +83,7 @@ def optimize_span(
         if min_cut_width <= cut <= max(choices) and abs(length - cut) <= end_tolerance:
             return [PanelSize(cut, None)]
 
-    limit = ceil(length + joint_gap + DEFAULT_CONFIG.tolerance)
+    limit = ceil(length + joint_gap + tolerance)
     states: list[tuple[float, ...] | None] = [None] * (limit + 1)
     states[0] = ()
     for amount, sequence in enumerate(states):
@@ -102,7 +103,7 @@ def optimize_span(
             continue
         occupied = sum(sequence) + joint_gap * (len(sequence) - 1)
         error = abs(length - occupied)
-        if error <= DEFAULT_CONFIG.tolerance:
+        if error <= tolerance:
             exact.append((error, sequence))
     if exact:
         sequence = min(exact, key=lambda item: (item[0], *_sequence_key(item[1], choices)))[1]
@@ -174,7 +175,11 @@ def optimize_span(
     return min(candidates, key=lambda item: item[0])[1]
 
 
-def layout_wall(wall: WallSegment, materials: MaterialConfig) -> list[Panel]:
+def layout_wall(
+    wall: WallSegment,
+    materials: MaterialConfig,
+    tolerance: float = DEFAULT_CONFIG.tolerance,
+) -> list[Panel]:
     panels: list[Panel] = []
 
     def add_solid_span(start: float, end: float) -> None:
@@ -191,6 +196,7 @@ def layout_wall(wall: WallSegment, materials: MaterialConfig) -> list[Panel]:
             materials.min_cut_width,
             materials.cut_step,
             materials.end_tolerance,
+            tolerance,
         )
         span_cursor = start
         for index, size in enumerate(sizes):

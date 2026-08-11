@@ -9,6 +9,7 @@ const OUTPUT_FILES = new Set([
   "detected_walls.dxf",
   "panel_schedule.csv",
   "panel_schedule.json",
+  "preset.json",
   "detected_model.json",
   "ai_recognition.json",
   "review_candidates.dxf",
@@ -21,7 +22,7 @@ export async function GET(_request, { params }) {
   }
 
   try {
-    const file = await readFile(path.join(process.cwd(), "output", "gui", job, name))
+    const file = await readFile(path.join(process.cwd(), "data", "jobs", job, name))
     return new Response(file, {
       headers: {
         "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,

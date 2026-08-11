@@ -1,8 +1,9 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 
 import CadReview from "./cad-review"
+import SiteHeader from "./site-header"
 
 const FILE_LABELS = {
   "panel_layout_result.dxf": "墙板排版图",
@@ -10,6 +11,7 @@ const FILE_LABELS = {
   "detected_walls.dxf": "墙体识别图",
   "panel_schedule.csv": "材料清单 CSV",
   "panel_schedule.json": "材料清单 JSON",
+  "preset.json": "本次设置预设",
   "detected_model.json": "识别模型",
   "ai_recognition.json": "AI 原始结果",
 }
@@ -22,8 +24,24 @@ function formatSize(size) {
 export default function Home() {
   const [cadFile, setCadFile] = useState(null)
   const [dragging, setDragging] = useState(false)
-  const [materialsFile, setMaterialsFile] = useState(null)
+  const [presets, setPresets] = useState([])
+  const [selectedPresetId, setSelectedPresetId] = useState("")
+  const [presetError, setPresetError] = useState("")
   const [state, setState] = useState({ status: "idle" })
+
+  useEffect(() => {
+    fetch("/api/settings", { cache: "no-store" })
+      .then(async (response) => {
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error || "无法读取设置预设。")
+        return result
+      })
+      .then((result) => {
+        setPresets(result.presets)
+        setSelectedPresetId(result.defaultPresetId || result.presets[0]?.id || "")
+      })
+      .catch((error) => setPresetError(error.message))
+  }, [])
 
   function selectCad(file) {
     if (file && !/\.(dxf|dwg)$/i.test(file.name)) {
@@ -39,12 +57,17 @@ export default function Home() {
       setState({ status: "error", message: "请先选择一个 DXF 或 DWG 图纸。" })
       return
     }
+    const selectedPreset = presets.find((preset) => preset.id === selectedPresetId)
+    if (!selectedPreset) {
+      setState({ status: "error", message: presetError || "请先选择一个设置预设。" })
+      return
+    }
 
     const data = new FormData()
     data.append("cad", cadFile)
-    if (materialsFile) data.append("materials", materialsFile)
     data.append("mode", mode)
-    setState({ status: "detecting", mode, logs: [] })
+    data.append("presetId", selectedPreset.id)
+    setState({ status: "detecting", mode, presetName: selectedPreset.name, logs: [] })
 
     try {
       const response = await fetch("/api/convert", { method: "POST", body: data })
@@ -74,9 +97,9 @@ export default function Home() {
         if (event.type === "step") {
           setState((current) => ({ ...current, logs: [...current.logs, event.message] }))
         } else if (event.type === "review") {
-          setState((current) => ({ status: "review", logs: current.logs, ...event }))
+          setState((current) => ({ ...current, status: "review", ...event }))
         } else if (event.type === "done") {
-          setState((current) => ({ status: "success", logs: current.logs, ...event }))
+          setState((current) => ({ ...current, status: "success", ...event }))
         } else if (event.type === "error") {
           throw new Error(event.message)
         }
@@ -132,21 +155,11 @@ export default function Home() {
     }
   }
 
+  const selectedPreset = presets.find((preset) => preset.id === selectedPresetId)
+
   return (
     <main className="workspace">
-      <header className="topbar">
-        <a className="brand" href="/" aria-label="CAD Master 首页">
-          <span className="brand-mark">CM</span>
-          <span>
-            <strong>CAD Master</strong>
-            <small>洁净室自动排板</small>
-          </span>
-        </a>
-        <div className="system-state">
-          <span />
-          本地处理服务
-        </div>
-      </header>
+      <SiteHeader active="workspace" />
 
       <section className="intro">
         <div>
@@ -205,19 +218,30 @@ export default function Home() {
           <div className="step-heading">
             <span>02</span>
             <div>
-              <h2>材料参数</h2>
-              <p>可选；不上传时使用项目默认配置</p>
+              <h2>选择预设</h2>
+              <p>识别、门窗和材料排板统一使用同一套参数</p>
             </div>
           </div>
-          <label className="compact-upload">
-            <input
-              type="file"
-              accept=".json,application/json"
-              onChange={(event) => setMaterialsFile(event.target.files[0] || null)}
-            />
-            <span>{materialsFile?.name || "选择 materials.json"}</span>
-            <b>{materialsFile ? "更换" : "浏览"}</b>
-          </label>
+          <div className="preset-picker">
+            <select
+              value={selectedPresetId}
+              onChange={(event) => setSelectedPresetId(event.target.value)}
+              disabled={!presets.length}
+              aria-label="设置预设"
+            >
+              {!presets.length && <option>{presetError || "正在读取预设…"}</option>}
+              {presets.map((preset) => (
+                <option key={preset.id} value={preset.id}>{preset.name}</option>
+              ))}
+            </select>
+            <a href="/settings">管理预设 ↗</a>
+            {selectedPreset && (
+              <p>
+                墙厚 {selectedPreset.drawing.wall_thicknesses.join(" / ")} mm
+                <span>墙板 {selectedPreset.materials.primary_width} · 吊顶 {selectedPreset.ceiling.panel_width} mm</span>
+              </p>
+            )}
+          </div>
         </div>
 
         <div className="step action-step">
@@ -232,16 +256,16 @@ export default function Home() {
             <button
               className="primary-action"
               type="button"
-              disabled={["detecting", "review", "converting"].includes(state.status)}
+              disabled={!selectedPresetId || ["detecting", "review", "converting"].includes(state.status)}
               onClick={() => convert("ai")}
             >
               <span>AI 转换</span>
-              <small>使用 .env 中的模型配置</small>
+              <small>使用所选预设和 .env 模型配置</small>
             </button>
             <button
               className="secondary-action"
               type="button"
-              disabled={["detecting", "review", "converting"].includes(state.status)}
+              disabled={!selectedPresetId || ["detecting", "review", "converting"].includes(state.status)}
               onClick={() => convert("local")}
             >
               <span>本地转换</span>
@@ -276,7 +300,7 @@ export default function Home() {
             <div className="review-heading">
               <div>
                 <strong>请确认墙体识别结果</strong>
-                <p>确认后才会继续生成墙板、吊顶排版图和材料清单。</p>
+                <p>当前预设：{state.presetName}。确认后继续生成墙板、吊顶排版图和材料清单。</p>
               </div>
               <div className="review-actions">
                 <button type="button" onClick={() => setState({ status: "idle" })}>返回重选</button>
@@ -306,7 +330,7 @@ export default function Home() {
               <span className="success-mark">✓</span>
               <div>
                 <strong>{state.mode === "ai" ? "AI 转换完成" : "本地转换完成"}</strong>
-                <p>任务 {state.job.slice(0, 8)}</p>
+                <p>任务 {state.job.slice(0, 8)} · {state.presetName}</p>
               </div>
             </div>
             <div className="downloads">
@@ -331,7 +355,7 @@ export default function Home() {
 
       <footer>
         <span>CAD MASTER / LOCAL WORKSPACE</span>
-        <span>图纸与结果保存在当前项目的 output 目录</span>
+        <span>图纸与结果保存在当前项目的 data/jobs 目录</span>
       </footer>
     </main>
   )

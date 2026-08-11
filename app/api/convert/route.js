@@ -3,6 +3,8 @@ import { createHash, randomUUID } from "node:crypto"
 import { copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 
+import { getPreset, presetFingerprint } from "@/lib/presets"
+
 export const runtime = "nodejs"
 export const maxDuration = 1800
 
@@ -13,6 +15,7 @@ const OUTPUT_FILES = new Set([
   "detected_walls.dxf",
   "panel_schedule.csv",
   "panel_schedule.json",
+  "preset.json",
   "detected_model.json",
   "ai_recognition.json",
 ])
@@ -27,8 +30,8 @@ const REVIEW_STAGES = {
 const JOB_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const CACHE_FILES = ["review_candidates.dxf", "review_entities.json"]
 
-function getCacheDirectory(hash, mode) {
-  return path.join(process.cwd(), "output", "cache", hash, mode)
+function getCacheDirectory(hash, mode, presetHash) {
+  return path.join(process.cwd(), "data", "cache", hash, mode, presetHash)
 }
 
 async function copyCacheFiles(source, target, mode) {
@@ -64,8 +67,8 @@ async function restoreCache(cacheDirectory, directory, inputPath, mode) {
   return checkpoint
 }
 
-async function sendReview(send, checkpoint, job, mode) {
-  const directory = path.join(process.cwd(), "output", "gui", job)
+async function sendReview(send, checkpoint, job, mode, preset) {
+  const directory = path.join(process.cwd(), "data", "jobs", job)
   const entityMap = JSON.parse(
     await readFile(path.join(directory, "review_entities.json"), "utf8"),
   )
@@ -101,6 +104,8 @@ async function sendReview(send, checkpoint, job, mode) {
     type: "review",
     job,
     mode,
+    presetId: preset.id,
+    presetName: preset.name,
     entityMap,
     reviewUrl: `/api/files/${job}/review_candidates.dxf`,
     walls: reviewWalls.map((wall) => {
@@ -206,7 +211,7 @@ async function confirmConversion(request) {
     return Response.json({ error: "确认请求无效。" }, { status: 400 })
   }
 
-  const directory = path.join(process.cwd(), "output", "gui", job)
+  const directory = path.join(process.cwd(), "data", "jobs", job)
   const meta = JSON.parse(await readFile(path.join(directory, "conversion_request.json"), "utf8"))
   const checkpointPath = path.join(directory, "conversion_checkpoint.json")
   const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"))
@@ -474,7 +479,7 @@ async function confirmConversion(request) {
     await writeFile(modelPath, JSON.stringify(model, null, 2))
   }
 
-  const cacheDirectory = getCacheDirectory(meta.sourceHash, meta.mode)
+  const cacheDirectory = getCacheDirectory(meta.sourceHash, meta.mode, meta.presetHash)
   await mkdir(cacheDirectory, { recursive: true })
   await copyCacheFiles(directory, cacheDirectory, meta.mode)
   await Promise.all([
@@ -488,6 +493,9 @@ async function confirmConversion(request) {
         fileName: meta.sourceName,
         sha256: meta.sourceHash,
         mode: meta.mode,
+        presetId: meta.presetId,
+        presetName: meta.presetName,
+        presetHash: meta.presetHash,
         updatedAt: new Date().toISOString(),
       }, null, 2),
     ),
@@ -500,7 +508,14 @@ async function confirmConversion(request) {
       const files = (await readdir(directory))
         .filter((name) => OUTPUT_FILES.has(name))
         .map((name) => ({ name, url: `/api/files/${job}/${name}` }))
-      send({ type: "done", job, mode: meta.mode, files })
+      send({
+        type: "done",
+        job,
+        mode: meta.mode,
+        presetId: meta.presetId,
+        presetName: meta.presetName,
+        files,
+      })
     },
   )
 }
@@ -513,8 +528,8 @@ export async function POST(request) {
 
     const form = await request.formData()
     const cad = form.get("cad")
-    const materials = form.get("materials")
     const mode = form.get("mode")
+    const presetId = form.get("presetId")
     const extension = cad instanceof File ? path.extname(cad.name).toLowerCase() : ""
 
     if (!(cad instanceof File) || !CAD_EXTENSIONS.has(extension)) {
@@ -526,44 +541,53 @@ export async function POST(request) {
     if (mode !== "ai" && mode !== "local") {
       return Response.json({ error: "转换模式无效。" }, { status: 400 })
     }
-    if (materials instanceof File && materials.size > 1024 * 1024) {
-      return Response.json({ error: "材料配置不能超过 1 MB。" }, { status: 400 })
+    if (typeof presetId !== "string") {
+      return Response.json({ error: "请选择一个设置预设。" }, { status: 400 })
     }
+    let preset
+    try {
+      preset = await getPreset(presetId)
+    } catch (error) {
+      return Response.json({ error: error.message }, { status: 400 })
+    }
+    const presetHash = presetFingerprint(preset)
 
     const content = Buffer.from(await cad.arrayBuffer())
     const sourceHash = createHash("sha256").update(content).digest("hex")
     const job = randomUUID()
-    const directory = path.join(process.cwd(), "output", "gui", job)
+    const directory = path.join(process.cwd(), "data", "jobs", job)
     const inputPath = path.join(directory, `source${extension}`)
     const outputPath = path.join(directory, "panel_layout_result.dxf")
-    let materialsPath = path.join(process.cwd(), "input", "materials.json")
+    const presetPath = path.join(directory, "preset.json")
 
     await mkdir(directory, { recursive: true })
     await writeFile(inputPath, content)
-
-    if (materials instanceof File && materials.size) {
-      const content = Buffer.from(await materials.arrayBuffer())
-      JSON.parse(content.toString("utf8"))
-      materialsPath = path.join(directory, "materials.json")
-      await writeFile(materialsPath, content)
-    }
+    await writeFile(presetPath, JSON.stringify(preset, null, 2))
 
     const args = [
       "--mode",
       mode,
       "--input",
       inputPath,
-      "--materials",
-      materialsPath,
+      "--preset",
+      presetPath,
       "--output",
       outputPath,
     ]
     await writeFile(
       path.join(directory, "conversion_request.json"),
-      JSON.stringify({ mode, args, sourceHash, sourceName: cad.name }),
+      JSON.stringify({
+        mode,
+        args,
+        sourceHash,
+        sourceName: cad.name,
+        presetId: preset.id,
+        presetName: preset.name,
+        presetHash,
+      }),
     )
     const cached = await restoreCache(
-      getCacheDirectory(sourceHash, mode),
+      getCacheDirectory(sourceHash, mode, presetHash),
       directory,
       inputPath,
       mode,
@@ -571,7 +595,7 @@ export async function POST(request) {
     if (cached) {
       return streamStages([], args, async (send) => {
         send({ type: "step", stage: "cache", message: "已读取本地识别缓存。" })
-        await sendReview(send, cached, job, mode)
+        await sendReview(send, cached, job, mode, preset)
       })
     }
 
@@ -579,10 +603,9 @@ export async function POST(request) {
       const checkpoint = JSON.parse(
         await readFile(path.join(directory, "conversion_checkpoint.json"), "utf8"),
       )
-      await sendReview(send, checkpoint, job, mode)
+      await sendReview(send, checkpoint, job, mode, preset)
     })
   } catch (error) {
-    const message = error instanceof SyntaxError ? "materials.json 不是有效的 JSON。" : error.message
-    return Response.json({ error: message }, { status: 500 })
+    return Response.json({ error: error.message }, { status: 500 })
   }
 }
