@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react"
 import {
-  ArrowRight,
   ArrowLeft,
+  ArrowRight,
   Check,
   CheckCircle2,
   CircleAlert,
@@ -11,11 +11,11 @@ import {
   Download,
   FileOutput,
   LoaderCircle,
-  SlidersHorizontal,
   Sparkles,
   Upload,
 } from "lucide-react"
 
+import CadResultViewer from "./cad-result-viewer"
 import CadReview from "./cad-review"
 import SiteHeader from "./site-header"
 
@@ -38,7 +38,6 @@ function formatSize(size) {
 export default function Home() {
   const [cadFile, setCadFile] = useState(null)
   const [dragging, setDragging] = useState(false)
-  const [presets, setPresets] = useState([])
   const [selectedPresetId, setSelectedPresetId] = useState("")
   const [presetError, setPresetError] = useState("")
   const [state, setState] = useState({ status: "idle" })
@@ -50,10 +49,7 @@ export default function Home() {
         if (!response.ok) throw new Error(result.error || "无法读取设置预设。")
         return result
       })
-      .then((result) => {
-        setPresets(result.presets)
-        setSelectedPresetId(result.defaultPresetId || result.presets[0]?.id || "")
-      })
+      .then((result) => setSelectedPresetId(result.defaultPresetId || result.presets[0]?.id || ""))
       .catch((error) => setPresetError(error.message))
   }, [])
 
@@ -71,17 +67,16 @@ export default function Home() {
       setState({ status: "error", message: "请先选择一个 DXF 或 DWG 图纸。" })
       return
     }
-    const selectedPreset = presets.find((preset) => preset.id === selectedPresetId)
-    if (!selectedPreset) {
-      setState({ status: "error", message: presetError || "请先选择一个设置预设。" })
+    if (!selectedPresetId) {
+      setState({ status: "error", message: presetError || "没有可用的默认参数预设。" })
       return
     }
 
     const data = new FormData()
     data.append("cad", cadFile)
     data.append("mode", mode)
-    data.append("presetId", selectedPreset.id)
-    setState({ status: "detecting", mode, presetName: selectedPreset.name, logs: [] })
+    data.append("presetId", selectedPresetId)
+    setState({ status: "detecting", mode, logs: [] })
 
     try {
       const response = await fetch("/api/convert", { method: "POST", body: data })
@@ -137,19 +132,10 @@ export default function Home() {
               .map((wall) => ({ id: wall.id, active: wall.active })),
             openings: state.walls.flatMap((wall) => wall.openings
               .filter((opening) => !opening.manual)
-              .map((opening) => ({
-                id: opening.id,
-                kind: opening.active ? opening.kind : "ignore",
-              }))),
+              .map((opening) => ({ id: opening.id, kind: opening.active ? opening.kind : "ignore" }))),
             manualWalls: state.walls
               .filter((wall) => wall.manual)
-              .map(({ id, start, end, thickness, active }) => ({
-                id,
-                start,
-                end,
-                thickness,
-                active,
-              })),
+              .map(({ id, start, end, thickness, active }) => ({ id, start, end, thickness, active })),
             manualOpenings: state.walls.flatMap((wall) => wall.openings
               .filter((opening) => opening.manual)
               .map(({ id, startOffset, endOffset, kind, active }) => ({
@@ -169,7 +155,7 @@ export default function Home() {
     }
   }
 
-  const selectedPreset = presets.find((preset) => preset.id === selectedPresetId)
+  const step = state.status === "success" ? 3 : state.walls ? 2 : 1
 
   return (
     <div className="min-h-screen lg:flex">
@@ -180,180 +166,133 @@ export default function Home() {
             <p className="font-mono text-[9px] font-bold tracking-[.18em] text-[#ff6b2c]">DRAWING OPERATIONS</p>
             <h1 className="mt-1 text-xl font-bold tracking-tight">转换工作台</h1>
           </div>
-          <div className="hidden items-center gap-3 text-right sm:flex">
-            <div><strong className="block text-xs">新建排板任务</strong><small className="text-[10px] text-slate-400">DXF / DWG → 墙板与吊顶</small></div>
-            <span className="grid size-9 place-items-center rounded-full bg-slate-100 font-mono text-[10px] font-bold text-slate-500">OP</span>
-          </div>
+          <ol className="hidden items-center gap-2 md:flex" aria-label="转换进度">
+            {["上传图纸", "调整墙门窗", "查看结果"].map((label, index) => {
+              const number = index + 1
+              return (
+                <li className={`flex items-center gap-2 text-xs font-semibold ${number === step ? "text-[#153b5b]" : number < step ? "text-emerald-600" : "text-slate-300"}`} key={label}>
+                  <span className={`grid size-7 place-items-center font-mono text-[10px] ${number === step ? "bg-[#ff6b2c] text-white" : number < step ? "bg-emerald-100" : "bg-slate-100"}`}>
+                    {number < step ? <Check className="size-3.5" aria-hidden="true" /> : number}
+                  </span>
+                  {label}{number < 3 && <ArrowRight className="ml-2 size-3 text-slate-300" aria-hidden="true" />}
+                </li>
+              )
+            })}
+          </ol>
         </header>
 
         <div className="mx-auto max-w-[1500px] p-4 sm:p-8">
-          <section className="relative overflow-hidden bg-[#153b5b] px-6 py-7 text-white shadow-[0_18px_50px_rgba(15,23,42,.12)] sm:px-9 sm:py-9">
-            <div className="absolute inset-0 opacity-20 [background-image:linear-gradient(rgba(255,255,255,.18)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.18)_1px,transparent_1px)] [background-size:24px_24px]" aria-hidden="true" />
-            <div className="relative max-w-2xl">
-              <span className="font-mono text-[10px] tracking-[.18em] text-sky-200">CAD MASTER / NEW JOB</span>
-              <h2 className="mt-4 text-3xl font-bold tracking-[-.04em] sm:text-4xl">从一张图纸，开始完整排板。</h2>
-              <p className="mt-3 max-w-xl text-sm leading-6 text-sky-100/70">识别墙体与门窗，校正确认后自动生成墙板、吊顶排版图和材料清单。</p>
-            </div>
-            <div className="absolute bottom-5 right-7 hidden font-mono text-[9px] tracking-[.16em] text-sky-200/50 md:block">W-014 · 1180 + 3 + 1180</div>
-          </section>
-
-          <section className="mt-6 grid gap-4 xl:grid-cols-[1.1fr_.9fr_1fr]">
-            <div className="border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-              <div className="flex items-start gap-4">
-                <span className="grid size-8 shrink-0 place-items-center bg-[#fff0e9] font-mono text-xs font-bold text-[#ff6b2c]">01</span>
-                <div><h2 className="text-sm font-bold">选择图纸</h2><p className="mt-1 text-xs text-slate-400">DXF、DWG · 最大 100 MB</p></div>
+          {step === 1 && (
+            <section className="mx-auto max-w-3xl py-4 sm:py-10">
+              <div className="mb-7">
+                <span className="font-mono text-[10px] font-bold tracking-[.18em] text-[#ff6b2c]">STEP 01 / 03</span>
+                <h2 className="mt-3 text-3xl font-bold tracking-[-.04em] sm:text-4xl">上传一张待处理图纸</h2>
+                <p className="mt-3 text-sm text-slate-500">系统会使用默认项目参数识别墙体、门和窗。</p>
               </div>
-          <label
-            className={`mt-5 flex min-h-36 cursor-pointer flex-col items-center justify-center border border-dashed p-5 text-center transition-colors focus-within:ring-2 focus-within:ring-[#ff6b2c] ${dragging ? "border-[#ff6b2c] bg-orange-50" : cadFile ? "border-emerald-300 bg-emerald-50/50" : "border-slate-300 bg-slate-50 hover:border-[#153b5b] hover:bg-sky-50/40"}`}
-            onDragEnter={() => setDragging(true)}
-            onDragOver={(event) => event.preventDefault()}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(event) => {
-              event.preventDefault()
-              setDragging(false)
-              selectCad(event.dataTransfer.files[0])
-            }}
-          >
-            <input
-              className="sr-only"
-              type="file"
-              accept=".dxf,.dwg"
-              onChange={(event) => selectCad(event.target.files[0])}
-            />
-            <span className={`grid size-10 place-items-center rounded-full ${cadFile ? "bg-emerald-500 text-white" : "bg-white text-[#153b5b] shadow-sm"}`}>
-              {cadFile ? <Check className="size-5" aria-hidden="true" /> : <Upload className="size-5" aria-hidden="true" />}
-            </span>
-            <span className="mt-3 min-w-0">
-              <strong className="block max-w-60 truncate text-sm">{dragging ? "松开即可选择图纸" : cadFile?.name || "点击选择或拖入图纸"}</strong>
-              <small className="mt-1 block text-[10px] text-slate-400">{cadFile ? formatSize(cadFile.size) : "文件只用于本次转换任务"}</small>
-            </span>
-          </label>
-        </div>
 
-            <div className="border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-              <div className="flex items-start gap-4">
-                <span className="grid size-8 shrink-0 place-items-center bg-[#fff0e9] font-mono text-xs font-bold text-[#ff6b2c]">02</span>
-                <div><h2 className="text-sm font-bold">选择参数预设</h2><p className="mt-1 text-xs text-slate-400">整条处理链共用一套规则</p></div>
-              </div>
-              <div className="mt-5">
-            <select
-              className="h-12 w-full border border-slate-300 bg-white px-3 text-sm font-semibold outline-none focus:border-[#153b5b] focus:ring-2 focus:ring-sky-100 disabled:text-slate-400"
-              value={selectedPresetId}
-              onChange={(event) => setSelectedPresetId(event.target.value)}
-              disabled={!presets.length}
-              aria-label="设置预设"
-            >
-              {!presets.length && <option>{presetError || "正在读取预设…"}</option>}
-              {presets.map((preset) => (
-                <option key={preset.id} value={preset.id}>{preset.name}</option>
-              ))}
-            </select>
-                <div className="mt-3 flex justify-end"><a className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#153b5b] hover:text-[#ff6b2c]" href="/settings"><SlidersHorizontal className="size-3.5" aria-hidden="true" />管理预设</a></div>
-            {selectedPreset && (
-                  <dl className="mt-4 grid grid-cols-3 gap-px bg-slate-200 font-mono text-[9px]">
-                    <div className="bg-slate-50 p-3"><dt className="text-slate-400">墙厚</dt><dd className="mt-1 font-bold text-slate-700">{selectedPreset.drawing.wall_thicknesses.join("/")}</dd></div>
-                    <div className="bg-slate-50 p-3"><dt className="text-slate-400">墙板</dt><dd className="mt-1 font-bold text-slate-700">{selectedPreset.materials.primary_width}</dd></div>
-                    <div className="bg-slate-50 p-3"><dt className="text-slate-400">吊顶</dt><dd className="mt-1 font-bold text-slate-700">{selectedPreset.ceiling.panel_width}</dd></div>
-                  </dl>
-            )}
-              </div>
-          </div>
+              <label
+                className={`flex min-h-[360px] cursor-pointer flex-col items-center justify-center border-2 border-dashed bg-white p-8 text-center shadow-sm transition-colors focus-within:ring-2 focus-within:ring-[#ff6b2c] ${dragging ? "border-[#ff6b2c] bg-orange-50" : cadFile ? "border-emerald-400" : "border-slate-300 hover:border-[#153b5b]"}`}
+                onDragEnter={() => setDragging(true)}
+                onDragOver={(event) => event.preventDefault()}
+                onDragLeave={() => setDragging(false)}
+                onDrop={(event) => {
+                  event.preventDefault()
+                  setDragging(false)
+                  selectCad(event.dataTransfer.files[0])
+                }}
+              >
+                <input className="sr-only" type="file" accept=".dxf,.dwg" onChange={(event) => selectCad(event.target.files[0])} />
+                <span className={`grid size-16 place-items-center rounded-full ${cadFile ? "bg-emerald-500 text-white" : "bg-sky-50 text-[#153b5b]"}`}>
+                  {cadFile ? <Check className="size-7" aria-hidden="true" /> : <Upload className="size-7" aria-hidden="true" />}
+                </span>
+                <strong className="mt-5 block max-w-md truncate text-lg">{dragging ? "松开即可上传" : cadFile?.name || "点击选择或拖入图纸"}</strong>
+                <small className="mt-2 text-xs text-slate-400">{cadFile ? `${formatSize(cadFile.size)} · DXF / DWG` : "支持 DXF、DWG，最大 100 MB"}</small>
+              </label>
 
-            <div className="border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-              <div className="flex items-start gap-4">
-                <span className="grid size-8 shrink-0 place-items-center bg-[#fff0e9] font-mono text-xs font-bold text-[#ff6b2c]">03</span>
-                <div><h2 className="text-sm font-bold">启动任务</h2><p className="mt-1 text-xs text-slate-400">选择识别引擎</p></div>
-          </div>
-              <div className="mt-5 grid gap-2">
-            <button
-              className="flex min-h-16 items-center justify-between bg-[#ff6b2c] px-5 text-left text-white transition-colors hover:bg-[#e9551b] focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 disabled:cursor-not-allowed disabled:opacity-40"
-              type="button"
-              disabled={!selectedPresetId || ["detecting", "review", "converting"].includes(state.status)}
-              onClick={() => convert("ai")}
-            >
-                  <span className="flex items-center gap-3"><Sparkles className="size-5" aria-hidden="true" /><span><strong className="block text-sm">AI 智能转换</strong><small className="mt-1 block text-[10px] text-orange-100">理解图纸语义，适合复杂图纸</small></span></span><ArrowRight className="size-4" aria-hidden="true" />
-            </button>
-            <button
-              className="flex min-h-14 items-center justify-between border border-slate-300 px-5 text-left transition-colors hover:border-[#153b5b] hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-100 disabled:cursor-not-allowed disabled:opacity-40"
-              type="button"
-              disabled={!selectedPresetId || ["detecting", "review", "converting"].includes(state.status)}
-              onClick={() => convert("local")}
-            >
-                  <span className="flex items-center gap-3"><Cpu className="size-4 text-slate-500" aria-hidden="true" /><span><strong className="block text-xs">本地规则转换</strong><small className="mt-1 block text-[9px] text-slate-400">不调用外部模型</small></span></span><ArrowRight className="size-4 text-slate-400" aria-hidden="true" />
-            </button>
-              </div>
-          </div>
-          </section>
-
-          <section className="mt-6 border border-slate-200 bg-white shadow-sm" aria-live="polite">
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4 sm:px-6"><div><h2 className="text-sm font-bold">任务输出</h2><p className="mt-1 text-[10px] text-slate-400">状态、复核与文件下载</p></div><span className="font-mono text-[9px] tracking-[.14em] text-slate-400">OUTPUT</span></div>
-            <div className="p-5 sm:p-6">
-        {state.status === "idle" && (
-                <div className="grid min-h-28 place-items-center border border-dashed border-slate-200 bg-slate-50 text-center"><div><FileOutput className="mx-auto size-6 text-slate-300" strokeWidth={1.6} aria-hidden="true" /><p className="mt-2 text-xs text-slate-400">完成上方三步后，转换结果会出现在这里</p></div></div>
-        )}
-        {(state.status === "detecting" || state.status === "converting") && (
-                <div className="flex min-h-28 items-center gap-4 bg-sky-50 p-5">
-                  <LoaderCircle className="size-6 animate-spin text-[#153b5b] motion-reduce:animate-none" aria-hidden="true" />
-            <div>
-                    <strong className="text-sm">
-                {state.status === "detecting"
-                  ? state.mode === "ai" ? "AI 正在识别墙体…" : "正在识别墙体…"
-                  : "正在生成排版图和材料清单…"}
-              </strong>
-                    <p className="mt-1 text-xs text-slate-500">复杂图纸可能需要几分钟，请保持当前页面打开。</p>
-            </div>
+              {state.status === "error" && (
+                <div className="mt-4 flex items-center gap-3 border-l-4 border-red-500 bg-red-50 p-4 text-sm text-red-800">
+                  <CircleAlert className="size-5 shrink-0" aria-hidden="true" />{state.message}
                 </div>
-        )}
-        {state.status === "review" && (
+              )}
+              {state.status === "detecting" ? (
+                <div className="mt-5 flex items-center justify-center gap-3 bg-[#153b5b] px-5 py-4 text-sm font-bold text-white">
+                  <LoaderCircle className="size-5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                  {state.mode === "ai" ? "AI 正在识别墙体与门窗…" : "本地规则正在识别墙体与门窗…"}
+                </div>
+              ) : (
+                <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                  <button className="flex items-center justify-between bg-[#ff6b2c] px-5 py-4 text-left text-white hover:bg-[#e9551b] disabled:cursor-not-allowed disabled:opacity-40" type="button" disabled={!cadFile} onClick={() => convert("ai")}>
+                    <span className="flex items-center gap-3"><Sparkles className="size-5" aria-hidden="true" /><span><strong className="block text-sm">AI 智能识别</strong><small className="mt-1 block text-[10px] text-orange-100">适合复杂图纸</small></span></span><ArrowRight className="size-4" aria-hidden="true" />
+                  </button>
+                  <button className="flex items-center justify-between border border-slate-300 bg-white px-5 py-4 text-left hover:border-[#153b5b] hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40" type="button" disabled={!cadFile} onClick={() => convert("local")}>
+                    <span className="flex items-center gap-3"><Cpu className="size-5 text-[#153b5b]" aria-hidden="true" /><span><strong className="block text-sm">本地规则识别</strong><small className="mt-1 block text-[10px] text-slate-400">不调用外部模型</small></span></span><ArrowRight className="size-4 text-slate-400" aria-hidden="true" />
+                  </button>
+                </div>
+              )}
+            </section>
+          )}
+
+          {step === 2 && (
+            <section>
+              <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
                 <div>
-                  <div className="mb-5 flex flex-col gap-4 border-l-4 border-amber-400 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                      <strong className="text-sm">请确认墙体识别结果</strong>
-                      <p className="mt-1 text-xs text-slate-500">当前预设：{state.presetName}。确认后继续生成排版图和材料清单。</p>
-              </div>
-                    <div className="flex gap-2"><button className="inline-flex items-center gap-1.5 border border-slate-300 bg-white px-4 py-2 text-xs font-semibold hover:bg-slate-50" type="button" onClick={() => setState({ status: "idle" })}><ArrowLeft className="size-3.5" aria-hidden="true" />返回重选</button><button className="inline-flex items-center gap-1.5 bg-[#ff6b2c] px-4 py-2 text-xs font-semibold text-white hover:bg-[#e9551b]" type="button" onClick={confirmWalls}><Check className="size-3.5" aria-hidden="true" />确认并继续</button></div>
-              </div>
-            <CadReview
-              walls={state.walls}
-              entityMap={state.entityMap}
-              reviewUrl={state.reviewUrl}
-              onChange={(walls) => setState((current) => ({ ...current, walls }))}
-            />
-          </div>
-        )}
-        {state.status === "error" && (
-                <div className="flex min-h-28 items-center gap-4 border-l-4 border-red-500 bg-red-50 p-5"><CircleAlert className="size-8 text-red-500" aria-hidden="true" />
-            <div>
-                    <strong className="text-sm text-red-900">转换未完成</strong><p className="mt-1 text-xs text-red-700">{state.message}</p>
-            </div>
+                  <span className="font-mono text-[10px] font-bold tracking-[.18em] text-[#ff6b2c]">STEP 02 / 03</span>
+                  <h2 className="mt-2 text-2xl font-bold tracking-[-.03em]">调整墙体、门和窗</h2>
+                  <p className="mt-2 text-xs text-slate-500">选择识别对象修改类型，也可以直接补画缺失内容。</p>
                 </div>
-        )}
-        {state.status === "success" && (
+                {state.status === "review" && (
+                  <div className="flex gap-2">
+                    <button className="inline-flex items-center gap-1.5 border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold hover:bg-slate-50" type="button" onClick={() => setState({ status: "idle" })}><ArrowLeft className="size-3.5" aria-hidden="true" />重新上传</button>
+                    <button className="inline-flex items-center gap-1.5 bg-[#ff6b2c] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#e9551b]" type="button" onClick={confirmWalls}><Check className="size-3.5" aria-hidden="true" />确认并生成</button>
+                  </div>
+                )}
+              </div>
+
+              {state.status === "converting" ? (
+                <div className="grid min-h-[560px] place-items-center border border-slate-200 bg-white text-center shadow-sm">
+                  <div><LoaderCircle className="mx-auto size-9 animate-spin text-[#ff6b2c] motion-reduce:animate-none" aria-hidden="true" /><strong className="mt-4 block text-sm">正在生成 CAD 排版结果…</strong><p className="mt-2 text-xs text-slate-400">请保持当前页面打开</p></div>
+                </div>
+              ) : (
+                <>
+                  {state.status === "error" && (
+                    <div className="mb-4 flex items-center justify-between gap-4 border-l-4 border-red-500 bg-red-50 p-4 text-sm text-red-800">
+                      <span className="flex items-center gap-2"><CircleAlert className="size-5 shrink-0" aria-hidden="true" />{state.message}</span>
+                      <button className="shrink-0 font-bold" type="button" onClick={() => setState((current) => ({ ...current, status: "review" }))}>返回调整</button>
+                    </div>
+                  )}
+                  <CadReview walls={state.walls} entityMap={state.entityMap} reviewUrl={state.reviewUrl} onChange={(walls) => setState((current) => ({ ...current, walls }))} />
+                </>
+              )}
+            </section>
+          )}
+
+          {step === 3 && (
+            <section>
+              <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
                 <div>
-                  <div className="flex items-center gap-3 bg-emerald-50 p-4"><CheckCircle2 className="size-8 text-emerald-500" aria-hidden="true" />
-              <div>
-                      <strong className="text-sm text-emerald-900">{state.mode === "ai" ? "AI 转换完成" : "本地转换完成"}</strong><p className="mt-1 font-mono text-[10px] text-emerald-700">任务 {state.job.slice(0, 8)} · {state.presetName}</p>
-              </div>
-            </div>
-                  <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-              {state.files.map((file) => (
-                      <a className="group flex items-center justify-between border border-slate-200 p-4 hover:border-[#153b5b] hover:bg-slate-50" key={file.name} href={file.url}>
-                        <span><strong className="block text-xs">{FILE_LABELS[file.name] || file.name}</strong><small className="mt-1 block font-mono text-[9px] text-slate-400">{file.name}</small></span><span className="flex items-center gap-1 text-xs font-bold text-[#153b5b] group-hover:text-[#ff6b2c]">下载<Download className="size-3.5" aria-hidden="true" /></span>
-                </a>
-              ))}
-            </div>
+                  <span className="font-mono text-[10px] font-bold tracking-[.18em] text-emerald-600">STEP 03 / 03 · COMPLETED</span>
+                  <h2 className="mt-2 text-2xl font-bold tracking-[-.03em]">查看生成的 CAD 结果</h2>
+                  <p className="mt-2 text-xs text-slate-500">任务 {state.job.slice(0, 8)} · {state.presetName}</p>
                 </div>
-        )}
-        {state.logs?.length > 0 && (
-                <ol className="mt-4 space-y-1 border-t border-slate-100 pt-4 font-mono text-[10px] text-slate-500">
-            {state.logs.map((line) => (
-                    <li className="before:mr-2 before:text-emerald-500 before:content-['✓']" key={line}>{line}</li>
-            ))}
-          </ol>
-        )}
-            </div>
-          </section>
-          <footer className="flex flex-col justify-between gap-2 py-6 font-mono text-[9px] tracking-[.1em] text-slate-400 sm:flex-row"><span>CAD MASTER / LOCAL WORKSPACE</span><span>图纸与结果保存在 data/jobs</span></footer>
+                <button className="inline-flex items-center gap-1.5 border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold hover:bg-slate-50" type="button" onClick={() => { setCadFile(null); setState({ status: "idle" }) }}><FileOutput className="size-3.5" aria-hidden="true" />新建任务</button>
+              </div>
+
+              <div className="mb-4 flex items-center gap-3 bg-emerald-50 p-4"><CheckCircle2 className="size-7 text-emerald-500" aria-hidden="true" /><strong className="text-sm text-emerald-900">排版图和材料清单已生成</strong></div>
+              <CadResultViewer files={state.files} />
+
+              <div className="mt-5 border border-slate-200 bg-white shadow-sm">
+                <div className="border-b border-slate-200 px-5 py-4"><h3 className="text-sm font-bold">下载全部结果</h3></div>
+                <div className="grid gap-px bg-slate-200 sm:grid-cols-2 xl:grid-cols-3">
+                  {state.files.map((file) => (
+                    <a className="group flex items-center justify-between bg-white p-4 hover:bg-slate-50" key={file.name} href={file.url} download>
+                      <span><strong className="block text-xs">{FILE_LABELS[file.name] || file.name}</strong><small className="mt-1 block font-mono text-[9px] text-slate-400">{file.name}</small></span>
+                      <Download className="size-4 text-[#153b5b] group-hover:text-[#ff6b2c]" aria-hidden="true" />
+                    </a>
+                  ))}
+                </div>
+              </div>
+            </section>
+          )}
         </div>
       </main>
     </div>
