@@ -100,7 +100,6 @@ def load_preset(path: str | Path) -> tuple[DrawingConfig, MaterialConfig, Ceilin
         max_length=float(ceiling_data["max_length"]),
         joint_gap=float(ceiling_data["joint_gap"]),
         min_cut_width=float(ceiling_data["min_cut_width"]),
-        large_room_ratio=float(ceiling_data["large_room_ratio"]),
         text_height=float(ceiling_data["text_height"]),
     )
     if (
@@ -108,10 +107,9 @@ def load_preset(path: str | Path) -> tuple[DrawingConfig, MaterialConfig, Ceilin
         or ceiling.max_length <= 0
         or ceiling.joint_gap < 0
         or ceiling.min_cut_width <= 0
-        or not 0 < ceiling.large_room_ratio <= 1
         or ceiling.text_height <= 0
     ):
-        raise ValueError("吊顶板规格、面积比例或标注参数无效")
+        raise ValueError("吊顶板规格或标注参数无效")
     return (
         drawing,
         MaterialConfig(
