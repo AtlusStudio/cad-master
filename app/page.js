@@ -160,8 +160,8 @@ export default function Home() {
   return (
     <div className="min-h-screen lg:flex">
       <SiteHeader active="workspace" />
-      <main className="min-w-0 flex-1">
-        <header className="flex min-h-[76px] items-center justify-between border-b border-slate-200 bg-white px-5 sm:px-8">
+      <main className="min-w-0 flex-1 lg:flex lg:h-screen lg:flex-col lg:overflow-hidden">
+        <header className="flex min-h-[76px] shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5 sm:px-8">
           <div>
             <p className="font-mono text-[9px] font-bold tracking-[.18em] text-[#ff6b2c]">DRAWING OPERATIONS</p>
             <h1 className="mt-1 text-xl font-bold tracking-tight">转换工作台</h1>
@@ -181,7 +181,7 @@ export default function Home() {
           </ol>
         </header>
 
-        <div className="mx-auto max-w-[1500px] p-4 sm:p-8">
+        <div className={step === 2 ? "p-4 sm:p-6 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col" : "mx-auto w-full max-w-[1500px] p-4 sm:p-8"}>
           {step === 1 && (
             <section className="mx-auto max-w-3xl py-4 sm:py-10">
               <div className="mb-7">
@@ -233,7 +233,7 @@ export default function Home() {
           )}
 
           {step === 2 && (
-            <section>
+            <section className="lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
               <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
                 <div>
                   <span className="font-mono text-[10px] font-bold tracking-[.18em] text-[#ff6b2c]">STEP 02 / 03</span>

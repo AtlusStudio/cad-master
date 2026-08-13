@@ -397,8 +397,8 @@ export default function CadReview({ walls, entityMap, reviewUrl, onChange }) {
             : "请在图纸中点击或框选候选"
 
   return (
-    <div className="overflow-hidden border border-slate-200 bg-slate-50">
-      <div className="relative h-[420px] min-h-[320px] bg-[#08111b] lg:h-[560px]">
+    <div className="overflow-hidden border border-slate-200 bg-slate-50 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
+      <div className="relative h-[420px] min-h-[320px] bg-[#08111b] lg:h-auto lg:flex-1">
         <div
           ref={containerRef}
           className="size-full outline-none focus:ring-2 focus:ring-inset focus:ring-[#ff6b2c]"
