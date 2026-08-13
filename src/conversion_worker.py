@@ -101,6 +101,9 @@ def load_preset(path: str | Path) -> tuple[DrawingConfig, MaterialConfig, Ceilin
         joint_gap=float(ceiling_data["joint_gap"]),
         min_cut_width=float(ceiling_data["min_cut_width"]),
         text_height=float(ceiling_data["text_height"]),
+        size_variety_weight=float(ceiling_data.get("size_variety_weight", 40.0)),
+        panel_count_weight=float(ceiling_data.get("panel_count_weight", 25.0)),
+        full_width_weight=float(ceiling_data.get("full_width_weight", 35.0)),
     )
     if (
         ceiling.panel_width <= 0
@@ -108,8 +111,19 @@ def load_preset(path: str | Path) -> tuple[DrawingConfig, MaterialConfig, Ceilin
         or ceiling.joint_gap < 0
         or ceiling.min_cut_width <= 0
         or ceiling.text_height <= 0
+        or min(
+            ceiling.size_variety_weight,
+            ceiling.panel_count_weight,
+            ceiling.full_width_weight,
+        ) < 0
+        or abs(
+            ceiling.size_variety_weight
+            + ceiling.panel_count_weight
+            + ceiling.full_width_weight
+            - 100.0
+        ) > 1e-6
     ):
-        raise ValueError("吊顶板规格或标注参数无效")
+        raise ValueError("吊顶板规格或标注参数无效，三个排板权重必须为非负数且合计 100%")
     return (
         drawing,
         MaterialConfig(

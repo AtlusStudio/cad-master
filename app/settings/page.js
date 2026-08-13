@@ -36,6 +36,9 @@ const CEILING_FIELDS = [
   ["joint_gap", "吊顶板缝", "mm", "相邻吊顶板之间的拼缝宽度"],
   ["min_cut_width", "最小收边宽", "mm", "多种排法中优先避免小于该宽度的收边板"],
   ["text_height", "吊顶标注字高", "mm", "吊顶板尺寸文字的高度"],
+  ["size_variety_weight", "规格种类权重", "%", "同一排板单位内，减少不同板块规格的权重"],
+  ["panel_count_weight", "板块总数权重", "%", "同一排板单位内，减少板块总数量的权重"],
+  ["full_width_weight", "保留原板宽权重", "%", "优先保留完整吊顶板宽，减少沿宽度裁切；三项权重须合计 100%"],
 ]
 
 const GROUP_CLASS = "mt-8 border-0 p-0 [&>legend]:mb-4 [&>legend]:flex [&>legend]:w-full [&>legend]:items-baseline [&>legend]:gap-3 [&>legend]:border-b [&>legend]:border-slate-200 [&>legend]:pb-3 [&>legend>span]:font-mono [&>legend>span]:text-[9px] [&>legend>span]:font-bold [&>legend>span]:text-[#ff6b2c] [&>legend>strong]:text-sm [&>legend>small]:ml-auto [&>legend>small]:hidden [&>legend>small]:text-[10px] [&>legend>small]:font-normal [&>legend>small]:text-slate-400 sm:[&>legend>small]:block"

@@ -47,6 +47,9 @@ class CeilingConfig:
     joint_gap: float = 0.0
     min_cut_width: float = 150.0
     text_height: float = 125.0
+    size_variety_weight: float = 40.0
+    panel_count_weight: float = 25.0
+    full_width_weight: float = 35.0
 
 
 DEFAULT_CONFIG = DrawingConfig()

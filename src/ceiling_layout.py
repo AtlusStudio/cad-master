@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from math import atan2, degrees, floor, hypot
+from math import atan2, ceil, degrees, floor, hypot
 from typing import Iterable
 
 from ezdxf.document import Drawing
@@ -33,6 +33,7 @@ CEILING_LAYERS = {
     "CEILING_TEXT": 4,
 }
 SNAP_TOLERANCE = 1.0
+FOLLOWING_ROOM_AREA_RATIO = 0.15
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,8 @@ class _LayoutPlan:
     length_axis: Point
     width_axis: Point
     origin: Point
+    length_size: float
+    width_size: float
 
 
 @dataclass(frozen=True)
@@ -266,6 +269,37 @@ def calculate_ceiling_layout(
             key = _edge_key(start, end)
             edge_rooms[key].append((room_index, (start, end) == key))
 
+    units: list[list[int]] = []
+    room_units: dict[int, int] = {}
+    for room_index, room in enumerate(rooms):
+        shared_lengths: dict[int, float] = defaultdict(float)
+        for key in room_edges[room_index]:
+            for neighbour, _ in edge_rooms[key]:
+                if neighbour < room_index:
+                    shared_lengths[neighbour] += edges[key].length
+        parents = [
+            neighbour
+            for neighbour in shared_lengths
+            if room.area
+            < rooms[units[room_units[neighbour]][0]].area * FOLLOWING_ROOM_AREA_RATIO
+        ]
+        if parents:
+            # ponytail: ambiguous small rooms follow the unit sharing the longest wall;
+            # add manual room grouping only when a real drawing needs a different owner.
+            parent = max(
+                parents,
+                key=lambda neighbour: (
+                    shared_lengths[neighbour],
+                    rooms[units[room_units[neighbour]][0]].area,
+                ),
+            )
+            unit_index = room_units[parent]
+            units[unit_index].append(room_index)
+        else:
+            unit_index = len(units)
+            units.append([room_index])
+        room_units[room_index] = unit_index
+
     wall_shapes = {
         key: set_precision(
             buffer(
@@ -349,19 +383,27 @@ def calculate_ceiling_layout(
 
     def score_rooms(
         room_indexes: list[int],
-    ) -> tuple[tuple[int, int, float, int, int, float, int], ...]:
+    ) -> tuple[int, int, float, float, float, int, int, int, int]:
         regions = build_regions()
-        return tuple(
-            _layout_score(
-                _layout_region(regions[room_index], config).panels,
-                config,
-                regions[room_index],
+        scores = []
+        for unit_index in sorted({room_units[room_index] for room_index in room_indexes}):
+            unit = units[unit_index]
+            unit_plans = _layout_unit(regions, unit, config)
+            scores.append(
+                _layout_score(
+                    tuple(
+                        panel
+                        for room_index in unit
+                        for panel in unit_plans[room_index].panels
+                    ),
+                    config,
+                    sum(regions[room_index].area for room_index in unit),
+                )
             )
-            for room_index in room_indexes
-        )
+        return tuple(sum(values) for values in zip(*scores))  # type: ignore[return-value]
 
-    # ponytail: one greedy pass assigns each complete wall line to the side
-    # producing fewer cuts; add global search only if a real plan exposes a local minimum.
+    # ponytail: one greedy pass assigns each complete wall line to the better-scoring side;
+    # add global search only if a real plan exposes a local minimum.
     for line in line_sides:
         affected_rooms = sorted(
             {
@@ -378,70 +420,159 @@ def calculate_ceiling_layout(
 
     boundaries: list[tuple[Point, ...]] = []
     panels: list[CeilingPanel] = []
-    plans: dict[int, _LayoutPlan] = {}
     regions = build_regions()
+    plans = {
+        room_index: plan
+        for unit in units
+        for room_index, plan in _layout_unit(regions, unit, config).items()
+    }
     for room_index in range(len(rooms)):
         region = regions[room_index]
-        inherited = [
-            plans[neighbour]
-            for neighbour in sorted(
-                {
-                    neighbour
-                    for key in room_edges[room_index]
-                    for neighbour, _ in edge_rooms[key]
-                }
-            )
-            if neighbour in plans
-        ]
-        plan = _layout_region(region, config, inherited)
-        plans[room_index] = plan
         boundaries.extend(tuple(_exterior_points(part)) for part in _polygon_parts(region))
-        panels.extend(plan.panels)
+        panels.extend(plans[room_index].panels)
     return CeilingLayout(tuple(boundaries), tuple(panels))
 
 
-def _layout_region(
+def _layout_candidates(
     region: BaseGeometry,
     config: CeilingConfig,
-    inherited: Iterable[_LayoutPlan] = (),
-) -> _LayoutPlan:
+) -> list[_LayoutPlan]:
     boundary = _exterior_points(max(_polygon_parts(region), key=lambda part: part.area))
     length_axis, width_axis = _axes(boundary)
     axes = (
         (length_axis, width_axis),
         (width_axis, (-width_axis[1], width_axis[0])),
     )
-    candidates = [
-        _layout_region_from_grid(
-            region, config, candidate_length, candidate_width, length_anchor, width_anchor
-        )
-        for candidate_length, candidate_width in axes
-        for length_anchor in (False, True)
-        for width_anchor in (False, True)
-    ]
-    candidates.extend(
-        _layout_region_from_grid(
+    candidates: list[_LayoutPlan] = []
+    for candidate_length, candidate_width in axes:
+        local_region = affine_transform(
             region,
-            config,
-            plan.length_axis,
-            plan.width_axis,
-            origin=plan.origin,
+            [
+                candidate_length[0],
+                candidate_length[1],
+                candidate_width[0],
+                candidate_width[1],
+                0,
+                0,
+            ],
         )
-        for plan in inherited
-    )
-    return min(candidates, key=lambda plan: _layout_score(plan.panels, config, region))
+        min_x, min_y, max_x, max_y = local_region.bounds
+
+        def balanced_size(span: float, maximum: float) -> float:
+            count = max(1, ceil((span + config.joint_gap) / (maximum + config.joint_gap)))
+            return (span - config.joint_gap * (count - 1)) / count
+
+        balanced_length = balanced_size(max_x - min_x, config.max_length)
+        balanced_width = balanced_size(max_y - min_y, config.panel_width)
+        grids = [
+            (config.max_length, config.panel_width, length_anchor, width_anchor)
+            for length_anchor in (False, True)
+            for width_anchor in (False, True)
+        ]
+        grids.extend(
+            (balanced_length, config.panel_width, False, width_anchor)
+            for width_anchor in (False, True)
+        )
+        grids.extend(
+            (config.max_length, balanced_width, length_anchor, False)
+            for length_anchor in (False, True)
+        )
+        grids.append((balanced_length, balanced_width, False, False))
+        seen: set[tuple[float, float, bool, bool]] = set()
+        for length_size, width_size, length_anchor, width_anchor in grids:
+            key = round(length_size, 6), round(width_size, 6), length_anchor, width_anchor
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                _layout_region_from_grid(
+                    region,
+                    config,
+                    candidate_length,
+                    candidate_width,
+                    length_size,
+                    width_size,
+                    length_anchor,
+                    width_anchor,
+                )
+            )
+    return candidates
+
+
+def _layout_unit(
+    regions: list[BaseGeometry],
+    room_indexes: list[int],
+    config: CeilingConfig,
+) -> dict[int, _LayoutPlan]:
+    choices: list[
+        tuple[tuple[int, int, float, float, float, int, int, int, int], dict[int, _LayoutPlan]]
+    ] = []
+    for root_plan in _layout_candidates(regions[room_indexes[0]], config):
+        plans = {room_indexes[0]: root_plan}
+        plans.update(
+            {
+                room_index: _layout_region_from_grid(
+                    regions[room_index],
+                    config,
+                    root_plan.length_axis,
+                    root_plan.width_axis,
+                    root_plan.length_size,
+                    root_plan.width_size,
+                    origin=root_plan.origin,
+                )
+                for room_index in room_indexes[1:]
+            }
+        )
+        panels = tuple(
+            panel
+            for room_index in room_indexes
+            for panel in plans[room_index].panels
+        )
+        choices.append(
+            (
+                _layout_score(
+                    panels,
+                    config,
+                    sum(regions[room_index].area for room_index in room_indexes),
+                ),
+                plans,
+            )
+        )
+    return min(choices, key=lambda choice: choice[0])[1]
 
 
 def _layout_score(
     panels: tuple[CeilingPanel, ...],
     config: CeilingConfig,
-    region: BaseGeometry,
-) -> tuple[int, int, float, int, int, float, int]:
+    region_area: float,
+) -> tuple[int, int, float, float, float, int, int, int, int]:
     wasted_area = [
-        panel.width * panel.length - abs(_signed_area(panel.vertices))
+        max(0.0, panel.width * panel.length - abs(_signed_area(panel.vertices)))
         for panel in panels
     ]
     panel_area = sum(abs(_signed_area(panel.vertices)) for panel in panels)
+    size_varieties = len(
+        {
+            tuple(
+                sorted(
+                    (
+                        round(panel.width / SNAP_TOLERANCE),
+                        round(panel.length / SNAP_TOLERANCE),
+                    )
+                )
+            )
+            for panel in panels
+        }
+    )
+    cut_widths = sum(
+        abs(panel.width - config.panel_width) > SNAP_TOLERANCE
+        for panel in panels
+    )
+    weighted_score = (
+        size_varieties * config.size_variety_weight
+        + len(panels) * config.panel_count_weight
+        + cut_widths * config.full_width_weight
+    ) / 100.0
     return (
         sum(
             panel.width > config.panel_width + SNAP_TOLERANCE
@@ -453,18 +584,13 @@ def _layout_score(
             or panel.length < config.min_cut_width
             for panel in panels
         ),
-        max(0.0, region.area - panel_area),
+        weighted_score,
+        max(0.0, region_area - panel_area),
+        sum(wasted_area),
         sum(area > SNAP_TOLERANCE for area in wasted_area),
-        sum(
-            abs(panel.width - config.panel_width) > SNAP_TOLERANCE
-            for panel in panels
-        ),
-        sum(wasted_area)
-        + sum(
-            max(0.0, config.panel_width - panel.width) * panel.length
-            for panel in panels
-        ),
+        size_varieties,
         len(panels),
+        cut_widths,
     )
 
 
@@ -473,6 +599,8 @@ def _layout_region_from_grid(
     config: CeilingConfig,
     length_axis: Point,
     width_axis: Point,
+    length_size: float,
+    width_size: float,
     length_anchor: bool = False,
     width_anchor: bool = False,
     origin: Point | None = None,
@@ -491,12 +619,12 @@ def _layout_region_from_grid(
     min_x, min_y, max_x, max_y = local_region.bounds
     if origin is None:
         origin = (
-            max_x - config.max_length if length_anchor else min_x,
-            max_y - config.panel_width if width_anchor else min_y,
+            max_x - length_size if length_anchor else min_x,
+            max_y - width_size if width_anchor else min_y,
         )
     panels: list[CeilingPanel] = []
-    length_pitch = config.max_length + config.joint_gap
-    width_pitch = config.panel_width + config.joint_gap
+    length_pitch = length_size + config.joint_gap
+    width_pitch = width_size + config.joint_gap
     x = origin[0] + floor((min_x - origin[0]) / length_pitch) * length_pitch
     while x < max_x:
         y = origin[1] + floor((min_y - origin[1]) / width_pitch) * width_pitch
@@ -506,8 +634,8 @@ def _layout_region_from_grid(
                 box(
                     x,
                     y,
-                    x + config.max_length,
-                    y + config.panel_width,
+                    x + length_size,
+                    y + width_size,
                 ),
                 grid_size=SNAP_TOLERANCE,
             )
@@ -529,7 +657,14 @@ def _layout_region_from_grid(
                 )
             y += width_pitch
         x += length_pitch
-    return _LayoutPlan(tuple(panels), length_axis, width_axis, origin)
+    return _LayoutPlan(
+        tuple(panels),
+        length_axis,
+        width_axis,
+        origin,
+        length_size,
+        width_size,
+    )
 
 
 def draw_ceiling_layout(
