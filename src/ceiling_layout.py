@@ -7,8 +7,21 @@ from typing import Iterable
 
 from ezdxf.document import Drawing
 from ezdxf.enums import MTextEntityAlignment
-from ezdxf.math import Vec2
-from ezdxf.math.clipping import ConvexClippingPolygon2d
+from shapely import (
+    LineString,
+    Polygon,
+    box,
+    buffer,
+    difference,
+    get_parts,
+    intersection,
+    orient_polygons,
+    polygonize_full,
+    set_precision,
+    union_all,
+)
+from shapely.affinity import affine_transform
+from shapely.geometry.base import BaseGeometry
 
 from .config import DEFAULT_CEILING_CONFIG, CeilingConfig
 from .geometry import Point
@@ -16,7 +29,7 @@ from .wall_detector import WallSegment
 
 CEILING_LAYERS = {
     "CEILING_BOUNDARY": 3,
-    "CEILING_PANEL": 3,
+    "CEILING_PANEL": 2,
     "CEILING_TEXT": 4,
 }
 SNAP_TOLERANCE = 1.0
@@ -188,81 +201,29 @@ def _restore_graph(
     return edges
 
 
-def _bounded_faces(edges: dict[tuple[Point, Point], _Edge]) -> list[list[Point]]:
-    adjacency: dict[Point, list[Point]] = defaultdict(list)
-    for start, end in edges:
-        adjacency[start].append(end)
-        adjacency[end].append(start)
-    for vertex, neighbours in adjacency.items():
-        neighbours.sort(key=lambda point: atan2(point[1] - vertex[1], point[0] - vertex[0]))
-
-    visited: set[tuple[Point, Point]] = set()
-    faces: list[list[Point]] = []
-    for start, end in ((a, b) for edge in edges for a, b in (edge, edge[::-1])):
-        if (start, end) in visited:
-            continue
-        face: list[Point] = []
-        first = start, end
-        previous, current = first
-        while (previous, current) not in visited:
-            visited.add((previous, current))
-            face.append(previous)
-            neighbours = adjacency[current]
-            previous_index = neighbours.index(previous)
-            following = neighbours[previous_index - 1]
-            previous, current = current, following
-        if (previous, current) == first and len(face) >= 3 and _signed_area(face) > SNAP_TOLERANCE:
-            faces.append(face)
-    return faces
-
-
-def _line_intersection(first: tuple[Point, Point], second: tuple[Point, Point]) -> Point | None:
-    first_vector = first[1][0] - first[0][0], first[1][1] - first[0][1]
-    second_vector = second[1][0] - second[0][0], second[1][1] - second[0][1]
-    denominator = _cross(first_vector, second_vector)
-    if abs(denominator) < 1e-9:
-        return None
-    delta = second[0][0] - first[0][0], second[0][1] - first[0][1]
-    position = _cross(delta, second_vector) / denominator
-    return (
-        first[0][0] + first_vector[0] * position,
-        first[0][1] + first_vector[1] * position,
+def _bounded_faces(edges: dict[tuple[Point, Point], _Edge]) -> list[Polygon]:
+    polygons, _, _, _ = polygonize_full(tuple(LineString(key) for key in edges))
+    return sorted(
+        (
+            orient_polygons(polygon, exterior_cw=False)
+            for polygon in get_parts(polygons)
+            if isinstance(polygon, Polygon) and polygon.area > SNAP_TOLERANCE
+        ),
+        key=lambda room: room.area,
+        reverse=True,
     )
 
 
-def _ceiling_boundary(
-    boundary: list[Point],
-    thicknesses: dict[tuple[Point, Point], float],
-    owned_edges: set[tuple[Point, Point]],
-) -> list[Point]:
-    if _signed_area(boundary) < 0:
-        boundary.reverse()
-    offset_lines: list[tuple[Point, Point]] = []
-    for start, end in zip(boundary, (*boundary[1:], boundary[0])):
-        length = hypot(end[0] - start[0], end[1] - start[1])
-        normal = -(end[1] - start[1]) / length, (end[0] - start[0]) / length
-        key = _edge_key(start, end)
-        offset = thicknesses[key] / 2.0 * (-1 if key in owned_edges else 1)
-        offset_lines.append(
-            (
-                (start[0] + normal[0] * offset, start[1] + normal[1] * offset),
-                (end[0] + normal[0] * offset, end[1] + normal[1] * offset),
-            )
-        )
+def _exterior_points(polygon: Polygon) -> list[Point]:
+    return [(float(x), float(y)) for x, y in polygon.exterior.coords[:-1]]
 
-    result: list[Point] = []
-    for previous, current in zip((offset_lines[-1], *offset_lines[:-1]), offset_lines):
-        intersection = _line_intersection(previous, current)
-        if intersection is None:
-            intersection = (
-                (previous[1][0] + current[0][0]) / 2.0,
-                (previous[1][1] + current[0][1]) / 2.0,
-            )
-        if not result or hypot(intersection[0] - result[-1][0], intersection[1] - result[-1][1]) > SNAP_TOLERANCE:
-            result.append(intersection)
-    if len(result) < 3 or abs(_signed_area(result)) <= SNAP_TOLERANCE:
-        raise ValueError("墙厚分配后没有有效吊顶区域")
-    return result
+
+def _polygon_parts(geometry: BaseGeometry) -> list[Polygon]:
+    return [
+        part
+        for part in get_parts(geometry)
+        if isinstance(part, Polygon) and part.area > SNAP_TOLERANCE
+    ]
 
 
 def _axes(boundary: list[Point]) -> tuple[Point, Point]:
@@ -290,16 +251,39 @@ def calculate_ceiling_layout(
     config: CeilingConfig = DEFAULT_CEILING_CONFIG,
 ) -> CeilingLayout:
     edges = _restore_graph(walls, junction_reserve)
-    rooms = sorted(_bounded_faces(edges), key=lambda room: abs(_signed_area(room)), reverse=True)
+    rooms = _bounded_faces(edges)
+    room_boundaries = [_exterior_points(room) for room in rooms]
     room_edges = [
-        {_edge_key(start, end) for start, end in zip(room, (*room[1:], room[0]))}
-        for room in rooms
+        {
+            _edge_key(start, end)
+            for start, end in zip(points, (*points[1:], points[0]))
+        }
+        for points in room_boundaries
     ]
     edge_rooms: dict[tuple[Point, Point], list[tuple[int, bool]]] = defaultdict(list)
-    for room_index, room in enumerate(rooms):
-        for start, end in zip(room, (*room[1:], room[0])):
+    for room_index, points in enumerate(room_boundaries):
+        for start, end in zip(points, (*points[1:], points[0])):
             key = _edge_key(start, end)
             edge_rooms[key].append((room_index, (start, end) == key))
+
+    wall_shapes = {
+        key: set_precision(
+            buffer(
+                LineString(key),
+                edges[key].thickness / 2.0,
+                quad_segs=1,
+                cap_style="square",
+                join_style="mitre",
+            ),
+            SNAP_TOLERANCE,
+        )
+        for key in edge_rooms
+    }
+    wall_area = union_all(tuple(wall_shapes.values()), grid_size=SNAP_TOLERANCE)
+    clear_rooms = [
+        difference(room, wall_area, grid_size=SNAP_TOLERANCE)
+        for room in rooms
+    ]
 
     def support_line(key: tuple[Point, Point]) -> tuple[float, float, float]:
         start, end = key
@@ -325,21 +309,56 @@ def calculate_ceiling_layout(
         room_is_left = next(is_left for index, is_left in room_indexes if index == room_index)
         return room_is_left == line_sides[edge_lines[key]]
 
-    def room_region(room_index: int) -> list[Point]:
-        keys = room_edges[room_index]
-        return _ceiling_boundary(
-            rooms[room_index].copy(),
-            {key: edges[key].thickness for key in keys},
-            {key for key in keys if owns_edge(room_index, key)},
-        )
+    def build_regions() -> list[BaseGeometry]:
+        desired_walls = [
+            union_all(
+                tuple(
+                    wall_shapes[key]
+                    for key in room_edges[room_index]
+                    if owns_edge(room_index, key)
+                ),
+                grid_size=SNAP_TOLERANCE,
+            )
+            for room_index in range(len(rooms))
+        ]
+        remaining_walls = wall_area
+        regions: list[BaseGeometry] = []
+        for room_index, clear_room in enumerate(clear_rooms):
+            owned_walls = union_all(
+                _polygon_parts(
+                    intersection(
+                        desired_walls[room_index],
+                        remaining_walls,
+                        grid_size=SNAP_TOLERANCE,
+                    )
+                ),
+                grid_size=SNAP_TOLERANCE,
+            )
+            remaining_walls = difference(
+                remaining_walls,
+                owned_walls,
+                grid_size=SNAP_TOLERANCE,
+            )
+            regions.append(
+                union_all(
+                    (clear_room, owned_walls),
+                    grid_size=SNAP_TOLERANCE,
+                )
+            )
+        return regions
 
-    def score_rooms(room_indexes: list[int]) -> tuple[int, int, float, int, int, float, int]:
-        scores = []
-        for room_index in room_indexes:
-            region = room_region(room_index)
-            plan = _layout_region(region, config)
-            scores.append(_layout_score(plan.panels, config, region))
-        return _sum_scores(scores)
+    def score_rooms(
+        room_indexes: list[int],
+    ) -> tuple[tuple[int, int, float, int, int, float, int], ...]:
+        regions = build_regions()
+        return tuple(
+            _layout_score(
+                _layout_region(regions[room_index], config).panels,
+                config,
+                regions[room_index],
+            )
+            for room_index in room_indexes
+        )
 
     # ponytail: one greedy pass assigns each complete wall line to the side
     # producing fewer cuts; add global search only if a real plan exposes a local minimum.
@@ -360,8 +379,9 @@ def calculate_ceiling_layout(
     boundaries: list[tuple[Point, ...]] = []
     panels: list[CeilingPanel] = []
     plans: dict[int, _LayoutPlan] = {}
+    regions = build_regions()
     for room_index in range(len(rooms)):
-        region = room_region(room_index)
+        region = regions[room_index]
         inherited = [
             plans[neighbour]
             for neighbour in sorted(
@@ -375,17 +395,18 @@ def calculate_ceiling_layout(
         ]
         plan = _layout_region(region, config, inherited)
         plans[room_index] = plan
-        boundaries.append(tuple(region))
+        boundaries.extend(tuple(_exterior_points(part)) for part in _polygon_parts(region))
         panels.extend(plan.panels)
     return CeilingLayout(tuple(boundaries), tuple(panels))
 
 
 def _layout_region(
-    region: list[Point],
+    region: BaseGeometry,
     config: CeilingConfig,
     inherited: Iterable[_LayoutPlan] = (),
 ) -> _LayoutPlan:
-    length_axis, width_axis = _axes(region)
+    boundary = _exterior_points(max(_polygon_parts(region), key=lambda part: part.area))
+    length_axis, width_axis = _axes(boundary)
     axes = (
         (length_axis, width_axis),
         (width_axis, (-width_axis[1], width_axis[0])),
@@ -411,16 +432,10 @@ def _layout_region(
     return min(candidates, key=lambda plan: _layout_score(plan.panels, config, region))
 
 
-def _sum_scores(
-    scores: Iterable[tuple[int, int, float, int, int, float, int]],
-) -> tuple[int, int, float, int, int, float, int]:
-    return tuple(sum(values) for values in zip(*scores))  # type: ignore[return-value]
-
-
 def _layout_score(
     panels: tuple[CeilingPanel, ...],
     config: CeilingConfig,
-    region: list[Point],
+    region: BaseGeometry,
 ) -> tuple[int, int, float, int, int, float, int]:
     wasted_area = [
         panel.width * panel.length - abs(_signed_area(panel.vertices))
@@ -438,7 +453,7 @@ def _layout_score(
             or panel.length < config.min_cut_width
             for panel in panels
         ),
-        max(0.0, abs(_signed_area(region)) - panel_area),
+        max(0.0, region.area - panel_area),
         sum(area > SNAP_TOLERANCE for area in wasted_area),
         sum(
             abs(panel.width - config.panel_width) > SNAP_TOLERANCE
@@ -454,7 +469,7 @@ def _layout_score(
 
 
 def _layout_region_from_grid(
-    region: list[Point],
+    region: BaseGeometry,
     config: CeilingConfig,
     length_axis: Point,
     width_axis: Point,
@@ -462,18 +477,18 @@ def _layout_region_from_grid(
     width_anchor: bool = False,
     origin: Point | None = None,
 ) -> _LayoutPlan:
-
-    local_boundary = [
-        Vec2(
-            point[0] * length_axis[0] + point[1] * length_axis[1],
-            point[0] * width_axis[0] + point[1] * width_axis[1],
-        )
-        for point in region
-    ]
-    min_x = min(point.x for point in local_boundary)
-    max_x = max(point.x for point in local_boundary)
-    min_y = min(point.y for point in local_boundary)
-    max_y = max(point.y for point in local_boundary)
+    local_region = affine_transform(
+        region,
+        [
+            length_axis[0],
+            length_axis[1],
+            width_axis[0],
+            width_axis[1],
+            0,
+            0,
+        ],
+    )
+    min_x, min_y, max_x, max_y = local_region.bounds
     if origin is None:
         origin = (
             max_x - config.max_length if length_anchor else min_x,
@@ -486,29 +501,26 @@ def _layout_region_from_grid(
     while x < max_x:
         y = origin[1] + floor((min_y - origin[1]) / width_pitch) * width_pitch
         while y < max_y:
-            rectangle = (
-                Vec2(x, y),
-                Vec2(x + config.max_length, y),
-                Vec2(x + config.max_length, y + config.panel_width),
-                Vec2(x, y + config.panel_width),
+            pieces = intersection(
+                local_region,
+                box(
+                    x,
+                    y,
+                    x + config.max_length,
+                    y + config.panel_width,
+                ),
+                grid_size=SNAP_TOLERANCE,
             )
-            for piece in ConvexClippingPolygon2d(rectangle).clip_polygon(local_boundary):
-                if len(piece) < 3:
-                    continue
-                if abs(_signed_area([(point.x, point.y) for point in piece])) <= SNAP_TOLERANCE:
-                    continue
-                piece_min_x = min(point.x for point in piece)
-                piece_max_x = max(point.x for point in piece)
-                piece_min_y = min(point.y for point in piece)
-                piece_max_y = max(point.y for point in piece)
+            for piece in _polygon_parts(pieces):
+                piece_min_x, piece_min_y, piece_max_x, piece_max_y = piece.bounds
                 panels.append(
                     CeilingPanel(
                         tuple(
                             (
-                                point.x * length_axis[0] + point.y * width_axis[0],
-                                point.x * length_axis[1] + point.y * width_axis[1],
+                                local_x * length_axis[0] + local_y * width_axis[0],
+                                local_x * length_axis[1] + local_y * width_axis[1],
                             )
-                            for point in piece
+                            for local_x, local_y in piece.exterior.coords[:-1]
                         ),
                         piece_max_y - piece_min_y,
                         piece_max_x - piece_min_x,
@@ -526,8 +538,8 @@ def draw_ceiling_layout(
     config: CeilingConfig = DEFAULT_CEILING_CONFIG,
 ) -> None:
     for name, color in CEILING_LAYERS.items():
-        if name not in doc.layers:
-            doc.layers.add(name, color=color)
+        layer = doc.layers.get(name) if name in doc.layers else doc.layers.add(name)
+        layer.color = color
     modelspace = doc.modelspace()
     for boundary in layout.boundaries:
         modelspace.add_lwpolyline(
