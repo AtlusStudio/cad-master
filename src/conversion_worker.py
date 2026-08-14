@@ -310,6 +310,7 @@ def generate_stage(args: argparse.Namespace) -> None:
 
     ceiling_doc = read_dxf(checkpoint["drawing_path"])
     ceiling_layout = calculate_ceiling_layout(
+        ceiling_doc,
         detected.walls,
         drawing.junction_reserve,
         ceiling,

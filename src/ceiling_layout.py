@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from math import atan2, ceil, degrees, floor, hypot
+from math import ceil, floor, hypot
 from typing import Iterable
 
 from ezdxf.document import Drawing
 from ezdxf.enums import MTextEntityAlignment
+from ezdxf.path import from_hatch, make_polygon_structure
 from shapely import (
     LineString,
     Polygon,
@@ -14,6 +15,7 @@ from shapely import (
     buffer,
     difference,
     get_parts,
+    contains_xy,
     intersection,
     orient_polygons,
     polygonize_full,
@@ -25,7 +27,7 @@ from shapely.geometry.base import BaseGeometry
 
 from .config import DEFAULT_CEILING_CONFIG, CeilingConfig
 from .geometry import Point
-from .wall_detector import WallSegment
+from .wall_detector import WallSegment, _iter_all_entities
 
 CEILING_LAYERS = {
     "CEILING_BOUNDARY": 3,
@@ -42,6 +44,7 @@ class CeilingPanel:
     width: float
     length: float
     length_axis: Point
+    holes: tuple[tuple[Point, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -73,13 +76,6 @@ class _Edge:
 
 def _cross(first: Point, second: Point) -> float:
     return first[0] * second[1] - first[1] * second[0]
-
-
-def _signed_area(vertices: list[Point] | tuple[Point, ...]) -> float:
-    return sum(
-        first[0] * second[1] - second[0] * first[1]
-        for first, second in zip(vertices, (*vertices[1:], vertices[0]))
-    ) / 2.0
 
 
 def _centroid(vertices: tuple[Point, ...]) -> Point:
@@ -221,6 +217,58 @@ def _exterior_points(polygon: Polygon) -> list[Point]:
     return [(float(x), float(y)) for x, y in polygon.exterior.coords[:-1]]
 
 
+def _interior_points(polygon: Polygon) -> tuple[tuple[Point, ...], ...]:
+    return tuple(
+        tuple((float(x), float(y)) for x, y in ring.coords[:-1])
+        for ring in polygon.interiors
+    )
+
+
+def _solid_fill_geometry(doc: Drawing) -> BaseGeometry:
+    def hatch_polygon(paths: list) -> BaseGeometry:
+        exterior, *holes = paths
+        polygon = Polygon(
+            [(float(point.x), float(point.y)) for point in exterior.flattening(SNAP_TOLERANCE)]
+        )
+        return difference(
+            polygon,
+            union_all(tuple(hatch_polygon(hole) for hole in holes), grid_size=SNAP_TOLERANCE),
+            grid_size=SNAP_TOLERANCE,
+        )
+
+    return union_all(
+        tuple(
+            hatch_polygon(paths)
+            for entity, _ in _iter_all_entities(doc, doc.modelspace())
+            if entity.dxftype() in {"HATCH", "MPOLYGON"}
+            and entity.dxf.get("solid_fill", 0)
+            for paths in make_polygon_structure(from_hatch(entity))
+        ),
+        grid_size=SNAP_TOLERANCE,
+    )
+
+
+def _panel_polygon(panel: CeilingPanel) -> Polygon:
+    return Polygon(panel.vertices, panel.holes)
+
+
+def _panel_center(panel: CeilingPanel) -> Point:
+    if not panel.holes:
+        return _centroid(panel.vertices)
+    point = _panel_polygon(panel).representative_point()
+    return float(point.x), float(point.y)
+
+
+def _panel_label(panel: CeilingPanel) -> tuple[Point, float]:
+    polygon = _panel_polygon(panel)
+    min_x, min_y, max_x, max_y = polygon.bounds
+    center = (min_x + max_x) / 2.0, (min_y + max_y) / 2.0
+    if not contains_xy(polygon, *center):
+        point = polygon.representative_point()
+        center = float(point.x), float(point.y)
+    return center, 0.0 if max_x - min_x >= max_y - min_y else 90.0
+
+
 def _polygon_parts(geometry: BaseGeometry) -> list[Polygon]:
     return [
         part
@@ -249,10 +297,12 @@ def _axes(boundary: list[Point]) -> tuple[Point, Point]:
 
 
 def calculate_ceiling_layout(
+    doc: Drawing,
     walls: Iterable[WallSegment],
     junction_reserve: float = 5.0,
     config: CeilingConfig = DEFAULT_CEILING_CONFIG,
 ) -> CeilingLayout:
+    solid_fills = _solid_fill_geometry(doc)
     edges = _restore_graph(walls, junction_reserve)
     rooms = _bounded_faces(edges)
     room_boundaries = [_exterior_points(room) for room in rooms]
@@ -374,8 +424,12 @@ def calculate_ceiling_layout(
                 grid_size=SNAP_TOLERANCE,
             )
             regions.append(
-                union_all(
-                    (clear_room, owned_walls),
+                difference(
+                    union_all(
+                        (clear_room, owned_walls),
+                        grid_size=SNAP_TOLERANCE,
+                    ),
+                    solid_fills,
                     grid_size=SNAP_TOLERANCE,
                 )
             )
@@ -387,17 +441,16 @@ def calculate_ceiling_layout(
         regions = build_regions()
         scores = []
         for unit_index in sorted({room_units[room_index] for room_index in room_indexes}):
-            unit = units[unit_index]
-            unit_plans = _layout_unit(regions, unit, config)
+            unit_region = union_all(
+                tuple(regions[room_index] for room_index in units[unit_index]),
+                grid_size=SNAP_TOLERANCE,
+            )
+            plan = _layout_unit(unit_region, config)
             scores.append(
                 _layout_score(
-                    tuple(
-                        panel
-                        for room_index in unit
-                        for panel in unit_plans[room_index].panels
-                    ),
+                    plan.panels,
                     config,
-                    sum(regions[room_index].area for room_index in unit),
+                    unit_region.area,
                 )
             )
         return tuple(sum(values) for values in zip(*scores))  # type: ignore[return-value]
@@ -421,15 +474,68 @@ def calculate_ceiling_layout(
     boundaries: list[tuple[Point, ...]] = []
     panels: list[CeilingPanel] = []
     regions = build_regions()
-    plans = {
-        room_index: plan
+    unit_regions = [
+        union_all(
+            tuple(regions[room_index] for room_index in unit),
+            grid_size=SNAP_TOLERANCE,
+        )
         for unit in units
-        for room_index, plan in _layout_unit(regions, unit, config).items()
-    }
-    for room_index in range(len(rooms)):
-        region = regions[room_index]
-        boundaries.extend(tuple(_exterior_points(part)) for part in _polygon_parts(region))
-        panels.extend(plans[room_index].panels)
+    ]
+    base_plans = [_layout_unit(region, config) for region in unit_regions]
+
+    adjacent_units: set[tuple[int, int]] = set()
+    for room_indexes in edge_rooms.values():
+        indexes = {room_units[room_index] for room_index, _ in room_indexes}
+        for first in indexes:
+            for second in indexes:
+                if first < second:
+                    adjacent_units.add((first, second))
+
+    bridge_candidates = []
+    for first, second in sorted(adjacent_units):
+        bridge = _layout_bridge(unit_regions[first], unit_regions[second], config)
+        if bridge is None:
+            continue
+        region_area = unit_regions[first].area + unit_regions[second].area
+        base_score = _layout_score(
+            (*base_plans[first].panels, *base_plans[second].panels),
+            config,
+            region_area,
+        )
+        bridge_score = _layout_score(bridge.panels, config, region_area)
+        if bridge_score < base_score:
+            bridge_candidates.append(
+                (
+                    tuple(base - candidate for base, candidate in zip(base_score, bridge_score)),
+                    first,
+                    second,
+                    bridge,
+                )
+            )
+
+    bridges: dict[int, tuple[int, _LayoutPlan]] = {}
+    # ponytail: greedy pairing keeps each large-room unit to one local bridge;
+    # use maximum-weight matching only if a real plan shows a worse global choice.
+    for _, first, second, bridge in sorted(
+        bridge_candidates,
+        key=lambda candidate: candidate[0],
+        reverse=True,
+    ):
+        if first in bridges or second in bridges:
+            continue
+        bridges[first] = second, bridge
+        bridges[second] = first, bridge
+
+    for region in regions:
+        for part in _polygon_parts(region):
+            boundaries.append(tuple(_exterior_points(part)))
+            boundaries.extend(_interior_points(part))
+    for unit_index, plan in enumerate(base_plans):
+        bridge = bridges.get(unit_index)
+        if bridge is None:
+            panels.extend(plan.panels)
+        elif unit_index < bridge[0]:
+            panels.extend(bridge[1].panels)
     return CeilingLayout(tuple(boundaries), tuple(panels))
 
 
@@ -500,45 +606,109 @@ def _layout_candidates(
 
 
 def _layout_unit(
-    regions: list[BaseGeometry],
-    room_indexes: list[int],
+    region: BaseGeometry,
     config: CeilingConfig,
-) -> dict[int, _LayoutPlan]:
-    choices: list[
-        tuple[tuple[int, int, float, float, float, int, int, int, int], dict[int, _LayoutPlan]]
-    ] = []
-    for root_plan in _layout_candidates(regions[room_indexes[0]], config):
-        plans = {room_indexes[0]: root_plan}
-        plans.update(
-            {
-                room_index: _layout_region_from_grid(
-                    regions[room_index],
-                    config,
-                    root_plan.length_axis,
-                    root_plan.width_axis,
-                    root_plan.length_size,
-                    root_plan.width_size,
-                    origin=root_plan.origin,
-                )
-                for room_index in room_indexes[1:]
-            }
-        )
-        panels = tuple(
-            panel
-            for room_index in room_indexes
-            for panel in plans[room_index].panels
-        )
-        choices.append(
-            (
-                _layout_score(
-                    panels,
-                    config,
-                    sum(regions[room_index].area for room_index in room_indexes),
-                ),
-                plans,
+) -> _LayoutPlan:
+    return min(
+        _layout_candidates(region, config),
+        key=lambda plan: _layout_score(plan.panels, config, region.area),
+    )
+
+
+def _layout_bridge(
+    first_region: BaseGeometry,
+    second_region: BaseGeometry,
+    config: CeilingConfig,
+) -> _LayoutPlan | None:
+    combined_region = union_all(
+        (first_region, second_region),
+        grid_size=SNAP_TOLERANCE,
+    )
+    choices: list[_LayoutPlan] = []
+    for grid in _layout_candidates(combined_region, config):
+        plans = [
+            _layout_region_from_grid(
+                region,
+                config,
+                grid.length_axis,
+                grid.width_axis,
+                grid.length_size,
+                grid.width_size,
+                origin=grid.origin,
             )
+            for region in (first_region, second_region)
+        ]
+        pitch = (
+            grid.length_size + config.joint_gap,
+            grid.width_size + config.joint_gap,
         )
-    return min(choices, key=lambda choice: choice[0])[1]
+
+        def cells(plan: _LayoutPlan) -> dict[tuple[int, int], list[CeilingPanel]]:
+            result: dict[tuple[int, int], list[CeilingPanel]] = defaultdict(list)
+            for panel in plan.panels:
+                center = _panel_center(panel)
+                local = (
+                    center[0] * grid.length_axis[0] + center[1] * grid.length_axis[1],
+                    center[0] * grid.width_axis[0] + center[1] * grid.width_axis[1],
+                )
+                result[
+                    (
+                        floor((local[0] - grid.origin[0]) / pitch[0]),
+                        floor((local[1] - grid.origin[1]) / pitch[1]),
+                    )
+                ].append(panel)
+            return result
+
+        first_cells, second_cells = (cells(plan) for plan in plans)
+        for cell in sorted(first_cells.keys() & second_cells.keys()):
+            if len(first_cells[cell]) != 1 or len(second_cells[cell]) != 1:
+                continue
+            first_panel = first_cells[cell][0]
+            second_panel = second_cells[cell][0]
+            merged_parts = _polygon_parts(
+                union_all(
+                    (_panel_polygon(first_panel), _panel_polygon(second_panel)),
+                    grid_size=SNAP_TOLERANCE,
+                )
+            )
+            if len(merged_parts) != 1:
+                continue
+            merged_vertices = tuple(_exterior_points(merged_parts[0]))
+            local_vertices = [
+                (
+                    point[0] * grid.length_axis[0] + point[1] * grid.length_axis[1],
+                    point[0] * grid.width_axis[0] + point[1] * grid.width_axis[1],
+                )
+                for point in merged_vertices
+            ]
+            choices.append(
+                _LayoutPlan(
+                    (
+                        *(panel for panel in plans[0].panels if panel is not first_panel),
+                        *(panel for panel in plans[1].panels if panel is not second_panel),
+                        CeilingPanel(
+                            merged_vertices,
+                            max(point[1] for point in local_vertices)
+                            - min(point[1] for point in local_vertices),
+                            max(point[0] for point in local_vertices)
+                            - min(point[0] for point in local_vertices),
+                            grid.length_axis,
+                            _interior_points(merged_parts[0]),
+                        ),
+                    ),
+                    grid.length_axis,
+                    grid.width_axis,
+                    grid.origin,
+                    grid.length_size,
+                    grid.width_size,
+                )
+            )
+    if not choices:
+        return None
+    return min(
+        choices,
+        key=lambda plan: _layout_score(plan.panels, config, combined_region.area),
+    )
 
 
 def _layout_score(
@@ -546,11 +716,12 @@ def _layout_score(
     config: CeilingConfig,
     region_area: float,
 ) -> tuple[int, int, float, float, float, int, int, int, int]:
+    panel_areas = [_panel_polygon(panel).area for panel in panels]
     wasted_area = [
-        max(0.0, panel.width * panel.length - abs(_signed_area(panel.vertices)))
-        for panel in panels
+        max(0.0, panel.width * panel.length - area)
+        for panel, area in zip(panels, panel_areas)
     ]
-    panel_area = sum(abs(_signed_area(panel.vertices)) for panel in panels)
+    panel_area = sum(panel_areas)
     size_varieties = len(
         {
             tuple(
@@ -653,6 +824,16 @@ def _layout_region_from_grid(
                         piece_max_y - piece_min_y,
                         piece_max_x - piece_min_x,
                         length_axis,
+                        tuple(
+                            tuple(
+                                (
+                                    local_x * length_axis[0] + local_y * width_axis[0],
+                                    local_x * length_axis[1] + local_y * width_axis[1],
+                                )
+                                for local_x, local_y in ring.coords[:-1]
+                            )
+                            for ring in piece.interiors
+                        ),
                     )
                 )
             y += width_pitch
@@ -683,17 +864,18 @@ def draw_ceiling_layout(
             dxfattribs={"layer": "CEILING_BOUNDARY"},
         )
     for panel in layout.panels:
-        rotation = degrees(atan2(panel.length_axis[1], panel.length_axis[0]))
-        modelspace.add_lwpolyline(
-            panel.vertices,
-            close=True,
-            dxfattribs={"layer": "CEILING_PANEL"},
-        )
+        label_at, rotation = _panel_label(panel)
+        for vertices in (panel.vertices, *panel.holes):
+            modelspace.add_lwpolyline(
+                vertices,
+                close=True,
+                dxfattribs={"layer": "CEILING_PANEL"},
+            )
         modelspace.add_mtext(
             f"{round(panel.width)}×{round(panel.length)}",
             dxfattribs={"layer": "CEILING_TEXT", "char_height": config.text_height},
         ).set_location(
-            _centroid(panel.vertices),
+            label_at,
             rotation=rotation,
             attachment_point=MTextEntityAlignment.MIDDLE_CENTER,
         )
