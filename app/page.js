@@ -160,8 +160,8 @@ export default function Home() {
   return (
     <div className="min-h-screen lg:flex">
       <SiteHeader active="workspace" />
-      <main className="min-w-0 flex-1 lg:flex lg:h-screen lg:flex-col lg:overflow-hidden">
-        <header className="flex min-h-[76px] shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5 sm:px-8">
+      <main className={`min-w-0 flex-1 lg:flex lg:h-screen lg:flex-col ${step === 2 ? "lg:overflow-hidden" : "lg:overflow-y-auto"}`}>
+        <header className="flex min-h-[76px] shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5 sm:px-8 lg:sticky lg:top-0">
           <div>
             <p className="font-mono text-[9px] font-bold tracking-[.18em] text-[#ff6b2c]">DRAWING OPERATIONS</p>
             <h1 className="mt-1 text-xl font-bold tracking-tight">转换工作台</h1>
