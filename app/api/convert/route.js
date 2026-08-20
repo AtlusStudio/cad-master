@@ -16,32 +16,21 @@ const OUTPUT_FILES = new Set([
   "panel_schedule.csv",
   "panel_schedule.json",
   "preset.json",
-  "detected_model.json",
-  "ai_recognition.json",
 ])
 
-const REVIEW_STAGES = {
-  ai: [
-    ["detect", "提取墙体候选…"],
-    ["recognize", "请求 AI 识别…"],
-  ],
-  local: [["detect", "提取墙体候选…"]],
-}
+const REVIEW_STAGES = [["detect", "本地识别墙体与门窗…"]]
 const JOB_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const CACHE_FILES = ["review_candidates.dxf", "review_entities.json"]
 
-function getCacheDirectory(hash, mode, presetHash) {
-  return path.join(process.cwd(), "data", "cache", hash, mode, presetHash)
+function getCacheDirectory(hash, presetHash) {
+  return path.join(process.cwd(), "data", "cache", hash, "local", presetHash)
 }
 
-async function copyCacheFiles(source, target, mode) {
-  const names = mode === "ai"
-    ? [...CACHE_FILES, "detected_model.json", "ai_recognition.json"]
-    : CACHE_FILES
-  await Promise.all(names.map((name) => copyFile(path.join(source, name), path.join(target, name))))
+async function copyCacheFiles(source, target) {
+  await Promise.all(CACHE_FILES.map((name) => copyFile(path.join(source, name), path.join(target, name))))
 }
 
-async function restoreCache(cacheDirectory, directory, inputPath, mode) {
+async function restoreCache(cacheDirectory, directory, inputPath) {
   let checkpoint
   try {
     checkpoint = JSON.parse(
@@ -53,21 +42,15 @@ async function restoreCache(cacheDirectory, directory, inputPath, mode) {
   }
 
   checkpoint.drawing_path = inputPath
-  await copyCacheFiles(cacheDirectory, directory, mode)
+  await copyCacheFiles(cacheDirectory, directory)
   await writeFile(
     path.join(directory, "conversion_checkpoint.json"),
     JSON.stringify(checkpoint),
   )
-  if (mode === "ai") {
-    const modelPath = path.join(directory, "detected_model.json")
-    const model = JSON.parse(await readFile(modelPath, "utf8"))
-    model.source.path = inputPath
-    await writeFile(modelPath, JSON.stringify(model, null, 2))
-  }
   return checkpoint
 }
 
-async function sendReview(send, checkpoint, job, mode, preset) {
+async function sendReview(send, checkpoint, job, preset) {
   const directory = path.join(process.cwd(), "data", "jobs", job)
   const entityMap = JSON.parse(
     await readFile(path.join(directory, "review_entities.json"), "utf8"),
@@ -103,7 +86,6 @@ async function sendReview(send, checkpoint, job, mode, preset) {
   send({
     type: "review",
     job,
-    mode,
     presetId: preset.id,
     presetName: preset.name,
     entityMap,
@@ -206,8 +188,12 @@ function streamStages(stages, args, done) {
 }
 
 async function confirmConversion(request) {
-  const { action, job, edits } = await request.json()
-  if (action !== "confirm" || !JOB_PATTERN.test(job)) {
+  const { action, job, layoutMode, edits } = await request.json()
+  if (
+    action !== "confirm"
+    || !JOB_PATTERN.test(job)
+    || !["ai", "local"].includes(layoutMode)
+  ) {
     return Response.json({ error: "确认请求无效。" }, { status: 400 })
   }
 
@@ -400,88 +386,10 @@ async function confirmConversion(request) {
     thickness_counts: [...thicknessCounts],
   }
   await writeFile(checkpointPath, JSON.stringify(checkpoint))
-  if (meta.mode === "ai") {
-    const modelPath = path.join(directory, "detected_model.json")
-    const model = JSON.parse(await readFile(modelPath, "utf8"))
-    model.recognition.manually_reviewed = true
-    model.walls = model.walls.filter((wall) => wallIds.has(wall.id)).map((wall) => {
-      const active = wallEdits.get(wall.id)
-      const wallChanged = active !== previousWalls.has(wall.id)
-      return {
-        ...wall,
-        install_panel: active,
-        wall_type: wallChanged
-          ? active ? "cleanroom_panel_wall" : "non_panel_wall"
-          : wall.wall_type,
-        ...(wallChanged ? { confidence: 1, evidence: ["用户确认"], source: "USER" } : {}),
-        openings: [
-          ...wall.openings.filter((opening) => openingIds.has(opening.id)).map((opening) => {
-            const kind = openingEdits.get(opening.id)
-            const finalKind = kind === "ignore" ? "other" : kind
-            return opening.kind === finalKind
-              ? opening
-              : {
-                  ...opening,
-                  kind: finalKind,
-                  confidence: 1,
-                  evidence: ["用户确认"],
-                  source: "USER",
-                }
-          }),
-          ...(manualOpeningsByWall.get(wall.id) || [])
-            .filter((opening) => opening.active && active)
-            .map((opening) => ({
-            id: opening.id,
-            kind: opening.kind,
-            source_hint: "user",
-            start_offset_mm: opening.startOffset,
-            end_offset_mm: opening.endOffset,
-            confidence: 1,
-            evidence: ["用户手绘"],
-            source: "USER",
-          })),
-        ],
-      }
-    })
-    model.walls.push(...manualWalls.filter((manualWall) => manualWall.active).map((manualWall) => {
-      const wall = walls.find((item) => item.id === manualWall.id)
-      return {
-        id: wall.id,
-        start: wall.start,
-        end: wall.end,
-        length_mm: lengthOf(wall),
-        thickness_mm: wall.thickness,
-        source_layer: wall.source_layer,
-        layer_color: null,
-        install_panel: true,
-        wall_type: wall.wall_type,
-        confidence: 1,
-        evidence: ["用户手绘"],
-        source: "USER",
-        openings: wall.openings.map((opening) => ({
-          id: opening.id,
-          kind: opening.kind,
-          source_hint: "user",
-          start_offset_mm: opening.start_offset,
-          end_offset_mm: opening.end_offset,
-          confidence: 1,
-          evidence: ["用户手绘"],
-          source: "USER",
-        })),
-      }
-    }))
-    model.low_confidence_ids = model.walls.flatMap((wall) => [
-      ...(wall.confidence < 0.85 ? [wall.id] : []),
-      ...wall.openings
-        .filter((opening) => opening.confidence < 0.85)
-        .map((opening) => opening.id),
-    ])
-    await writeFile(modelPath, JSON.stringify(model, null, 2))
-  }
 
-  const cacheDirectory = getCacheDirectory(meta.sourceHash, meta.mode, meta.presetHash)
+  const cacheDirectory = getCacheDirectory(meta.sourceHash, meta.presetHash)
   await mkdir(cacheDirectory, { recursive: true })
-  await copyCacheFiles(directory, cacheDirectory, meta.mode)
+  await copyCacheFiles(directory, cacheDirectory)
   await Promise.all([
     writeFile(
       path.join(cacheDirectory, "conversion_checkpoint.json"),
@@ -492,7 +400,7 @@ async function confirmConversion(request) {
       JSON.stringify({
         fileName: meta.sourceName,
         sha256: meta.sourceHash,
-        mode: meta.mode,
+        recognition: "local",
         presetId: meta.presetId,
         presetName: meta.presetName,
         presetHash: meta.presetHash,
@@ -502,8 +410,11 @@ async function confirmConversion(request) {
   ])
 
   return streamStages(
-    [["generate", "生成排版图和材料清单…"]],
-    meta.args,
+    [
+      ...(layoutMode === "ai" ? [["layout", "请求 AI 排版…"]] : []),
+      ["generate", "生成排版图和材料清单…"],
+    ],
+    [...meta.args, "--layout-mode", layoutMode],
     async (send) => {
       const files = (await readdir(directory))
         .filter((name) => OUTPUT_FILES.has(name))
@@ -511,7 +422,7 @@ async function confirmConversion(request) {
       send({
         type: "done",
         job,
-        mode: meta.mode,
+        mode: layoutMode,
         presetId: meta.presetId,
         presetName: meta.presetName,
         files,
@@ -528,7 +439,6 @@ export async function POST(request) {
 
     const form = await request.formData()
     const cad = form.get("cad")
-    const mode = form.get("mode")
     const presetId = form.get("presetId")
     const extension = cad instanceof File ? path.extname(cad.name).toLowerCase() : ""
 
@@ -537,9 +447,6 @@ export async function POST(request) {
     }
     if (cad.size > 100 * 1024 * 1024) {
       return Response.json({ error: "CAD 图纸不能超过 100 MB。" }, { status: 400 })
-    }
-    if (mode !== "ai" && mode !== "local") {
-      return Response.json({ error: "转换模式无效。" }, { status: 400 })
     }
     if (typeof presetId !== "string") {
       return Response.json({ error: "请选择一个设置预设。" }, { status: 400 })
@@ -565,8 +472,6 @@ export async function POST(request) {
     await writeFile(presetPath, JSON.stringify(preset, null, 2))
 
     const args = [
-      "--mode",
-      mode,
       "--input",
       inputPath,
       "--preset",
@@ -577,7 +482,6 @@ export async function POST(request) {
     await writeFile(
       path.join(directory, "conversion_request.json"),
       JSON.stringify({
-        mode,
         args,
         sourceHash,
         sourceName: cad.name,
@@ -587,23 +491,22 @@ export async function POST(request) {
       }),
     )
     const cached = await restoreCache(
-      getCacheDirectory(sourceHash, mode, presetHash),
+      getCacheDirectory(sourceHash, presetHash),
       directory,
       inputPath,
-      mode,
     )
     if (cached) {
       return streamStages([], args, async (send) => {
         send({ type: "step", stage: "cache", message: "已读取本地识别缓存。" })
-        await sendReview(send, cached, job, mode, preset)
+        await sendReview(send, cached, job, preset)
       })
     }
 
-    return streamStages(REVIEW_STAGES[mode], args, async (send) => {
+    return streamStages(REVIEW_STAGES, args, async (send) => {
       const checkpoint = JSON.parse(
         await readFile(path.join(directory, "conversion_checkpoint.json"), "utf8"),
       )
-      await sendReview(send, checkpoint, job, mode, preset)
+      await sendReview(send, checkpoint, job, preset)
     })
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 })

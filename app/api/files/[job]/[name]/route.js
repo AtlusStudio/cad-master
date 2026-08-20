@@ -10,8 +10,6 @@ const OUTPUT_FILES = new Set([
   "panel_schedule.csv",
   "panel_schedule.json",
   "preset.json",
-  "detected_model.json",
-  "ai_recognition.json",
   "review_candidates.dxf",
 ])
 

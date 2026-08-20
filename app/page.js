@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   ArrowLeft,
   ArrowRight,
@@ -26,8 +26,6 @@ const FILE_LABELS = {
   "panel_schedule.csv": "材料清单 CSV",
   "panel_schedule.json": "材料清单 JSON",
   "preset.json": "本次设置预设",
-  "detected_model.json": "识别模型",
-  "ai_recognition.json": "AI 原始结果",
 }
 
 function formatSize(size) {
@@ -41,6 +39,7 @@ export default function Home() {
   const [selectedPresetId, setSelectedPresetId] = useState("")
   const [presetError, setPresetError] = useState("")
   const [state, setState] = useState({ status: "idle" })
+  const startedFile = useRef(null)
 
   useEffect(() => {
     fetch("/api/settings", { cache: "no-store" })
@@ -53,6 +52,12 @@ export default function Home() {
       .catch((error) => setPresetError(error.message))
   }, [])
 
+  useEffect(() => {
+    if (!cadFile || !selectedPresetId || startedFile.current === cadFile) return
+    startedFile.current = cadFile
+    convert(cadFile)
+  }, [cadFile, selectedPresetId])
+
   function selectCad(file) {
     if (file && !/\.(dxf|dwg)$/i.test(file.name)) {
       setState({ status: "error", message: "请拖入 DXF 或 DWG 图纸。" })
@@ -62,8 +67,8 @@ export default function Home() {
     setState({ status: "idle" })
   }
 
-  async function convert(mode) {
-    if (!cadFile) {
+  async function convert(file = cadFile) {
+    if (!file) {
       setState({ status: "error", message: "请先选择一个 DXF 或 DWG 图纸。" })
       return
     }
@@ -73,10 +78,9 @@ export default function Home() {
     }
 
     const data = new FormData()
-    data.append("cad", cadFile)
-    data.append("mode", mode)
+    data.append("cad", file)
     data.append("presetId", selectedPresetId)
-    setState({ status: "detecting", mode, logs: [] })
+    setState({ status: "detecting", logs: [] })
 
     try {
       const response = await fetch("/api/convert", { method: "POST", body: data })
@@ -117,8 +121,8 @@ export default function Home() {
     }
   }
 
-  async function confirmWalls() {
-    setState((current) => ({ ...current, status: "converting" }))
+  async function confirmWalls(layoutMode) {
+    setState((current) => ({ ...current, status: "converting", layoutMode }))
     try {
       const response = await fetch("/api/convert", {
         method: "POST",
@@ -126,6 +130,7 @@ export default function Home() {
         body: JSON.stringify({
           action: "confirm",
           job: state.job,
+          layoutMode,
           edits: {
             walls: state.walls
               .filter((wall) => !wall.manual)
@@ -210,24 +215,18 @@ export default function Home() {
               </label>
 
               {state.status === "error" && (
-                <div className="mt-4 flex items-center gap-3 border-l-4 border-red-500 bg-red-50 p-4 text-sm text-red-800">
-                  <CircleAlert className="size-5 shrink-0" aria-hidden="true" />{state.message}
+                <div className="mt-4 flex items-center justify-between gap-3 border-l-4 border-red-500 bg-red-50 p-4 text-sm text-red-800">
+                  <span className="flex items-center gap-3"><CircleAlert className="size-5 shrink-0" aria-hidden="true" />{state.message}</span>
+                  {cadFile && selectedPresetId && <button className="shrink-0 font-bold" type="button" onClick={() => { startedFile.current = null; convert(cadFile) }}>重试</button>}
                 </div>
               )}
               {state.status === "detecting" ? (
                 <div className="mt-5 flex items-center justify-center gap-3 bg-[#153b5b] px-5 py-4 text-sm font-bold text-white">
                   <LoaderCircle className="size-5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-                  {state.mode === "ai" ? "AI 正在识别墙体与门窗…" : "本地规则正在识别墙体与门窗…"}
+                  本地规则正在识别墙体与门窗…
                 </div>
               ) : (
-                <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                  <button className="flex items-center justify-between bg-[#ff6b2c] px-5 py-4 text-left text-white hover:bg-[#e9551b] disabled:cursor-not-allowed disabled:opacity-40" type="button" disabled={!cadFile} onClick={() => convert("ai")}>
-                    <span className="flex items-center gap-3"><Sparkles className="size-5" aria-hidden="true" /><span><strong className="block text-sm">AI 智能识别</strong><small className="mt-1 block text-[10px] text-orange-100">适合复杂图纸</small></span></span><ArrowRight className="size-4" aria-hidden="true" />
-                  </button>
-                  <button className="flex items-center justify-between border border-slate-300 bg-white px-5 py-4 text-left hover:border-[#153b5b] hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40" type="button" disabled={!cadFile} onClick={() => convert("local")}>
-                    <span className="flex items-center gap-3"><Cpu className="size-5 text-[#153b5b]" aria-hidden="true" /><span><strong className="block text-sm">本地规则识别</strong><small className="mt-1 block text-[10px] text-slate-400">不调用外部模型</small></span></span><ArrowRight className="size-4 text-slate-400" aria-hidden="true" />
-                  </button>
-                </div>
+                <p className="mt-5 text-center text-xs text-slate-400">选择或拖入图纸后自动开始本地识别</p>
               )}
             </section>
           )}
@@ -242,15 +241,16 @@ export default function Home() {
                 </div>
                 {state.status === "review" && (
                   <div className="flex gap-2">
-                    <button className="inline-flex items-center gap-1.5 border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold hover:bg-slate-50" type="button" onClick={() => setState({ status: "idle" })}><ArrowLeft className="size-3.5" aria-hidden="true" />重新上传</button>
-                    <button className="inline-flex items-center gap-1.5 bg-[#ff6b2c] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#e9551b]" type="button" onClick={confirmWalls}><Check className="size-3.5" aria-hidden="true" />确认并生成</button>
+                    <button className="inline-flex items-center gap-1.5 border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold hover:bg-slate-50" type="button" onClick={() => { startedFile.current = null; setCadFile(null); setState({ status: "idle" }) }}><ArrowLeft className="size-3.5" aria-hidden="true" />重新上传</button>
+                    <button className="inline-flex items-center gap-1.5 bg-[#ff6b2c] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#e9551b]" type="button" onClick={() => confirmWalls("ai")}><Sparkles className="size-3.5" aria-hidden="true" />AI 排版</button>
+                    <button className="inline-flex items-center gap-1.5 bg-[#153b5b] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#0f2d46]" type="button" onClick={() => confirmWalls("local")}><Cpu className="size-3.5" aria-hidden="true" />本地模型排版</button>
                   </div>
                 )}
               </div>
 
               {state.status === "converting" ? (
                 <div className="grid min-h-[560px] place-items-center border border-slate-200 bg-white text-center shadow-sm">
-                  <div><LoaderCircle className="mx-auto size-9 animate-spin text-[#ff6b2c] motion-reduce:animate-none" aria-hidden="true" /><strong className="mt-4 block text-sm">正在生成 CAD 排版结果…</strong><p className="mt-2 text-xs text-slate-400">请保持当前页面打开</p></div>
+                  <div><LoaderCircle className="mx-auto size-9 animate-spin text-[#ff6b2c] motion-reduce:animate-none" aria-hidden="true" /><strong className="mt-4 block text-sm">{state.layoutMode === "ai" ? "AI 正在排版…" : "本地模型正在排版…"}</strong><p className="mt-2 text-xs text-slate-400">请保持当前页面打开</p></div>
                 </div>
               ) : (
                 <>
@@ -274,7 +274,7 @@ export default function Home() {
                   <h2 className="mt-2 text-2xl font-bold tracking-[-.03em]">查看生成的 CAD 结果</h2>
                   <p className="mt-2 text-xs text-slate-500">任务 {state.job.slice(0, 8)} · {state.presetName}</p>
                 </div>
-                <button className="inline-flex items-center gap-1.5 border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold hover:bg-slate-50" type="button" onClick={() => { setCadFile(null); setState({ status: "idle" }) }}><FileOutput className="size-3.5" aria-hidden="true" />新建任务</button>
+                <button className="inline-flex items-center gap-1.5 border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold hover:bg-slate-50" type="button" onClick={() => { startedFile.current = null; setCadFile(null); setState({ status: "idle" }) }}><FileOutput className="size-3.5" aria-hidden="true" />新建任务</button>
               </div>
 
               <div className="mb-4 flex items-center gap-3 bg-emerald-50 p-4"><CheckCircle2 className="size-7 text-emerald-500" aria-hidden="true" /><strong className="text-sm text-emerald-900">排版图和材料清单已生成</strong></div>
