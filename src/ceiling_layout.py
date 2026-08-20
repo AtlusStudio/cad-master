@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from math import ceil, floor, hypot
+from math import ceil, floor, hypot, sqrt
 from typing import Iterable
 
 from ezdxf.document import Drawing
@@ -36,6 +36,7 @@ CEILING_LAYERS = {
 }
 SNAP_TOLERANCE = 1.0
 FOLLOWING_ROOM_AREA_RATIO = 0.15
+CORRIDOR_ASPECT_RATIO = 3.0
 
 
 @dataclass(frozen=True)
@@ -347,6 +348,13 @@ def build_ceiling_strategy_input(
             - min(point[0] * axis[0] + point[1] * axis[1] for point in boundary)
             for axis in (length_axis, width_axis)
         ]
+        semi_perimeter = room.length / 2.0
+        estimated_width = (
+            semi_perimeter
+            - sqrt(max(0.0, semi_perimeter**2 - 4.0 * room.area))
+        ) / 2.0
+        estimated_length = room.area / estimated_width
+        aspect_ratio = estimated_length / estimated_width
         room_data.append(
             {
                 "room_id": f"R{index + 1:04d}",
@@ -354,6 +362,10 @@ def build_ceiling_strategy_input(
                 "area_mm2": round(room.area, 2),
                 "long_span_mm": round(spans[0], 2),
                 "short_span_mm": round(spans[1], 2),
+                "estimated_length_mm": round(estimated_length, 2),
+                "estimated_width_mm": round(estimated_width, 2),
+                "aspect_ratio": round(aspect_ratio, 2),
+                "is_corridor_candidate": aspect_ratio >= CORRIDOR_ASPECT_RATIO,
             }
         )
     return {

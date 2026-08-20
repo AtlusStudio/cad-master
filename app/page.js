@@ -243,14 +243,14 @@ export default function Home() {
                   <div className="flex gap-2">
                     <button className="inline-flex items-center gap-1.5 border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold hover:bg-slate-50" type="button" onClick={() => { startedFile.current = null; setCadFile(null); setState({ status: "idle" }) }}><ArrowLeft className="size-3.5" aria-hidden="true" />重新上传</button>
                     <button className="inline-flex items-center gap-1.5 bg-[#ff6b2c] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#e9551b]" type="button" onClick={() => confirmWalls("ai")}><Sparkles className="size-3.5" aria-hidden="true" />AI 排版</button>
-                    <button className="inline-flex items-center gap-1.5 bg-[#153b5b] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#0f2d46]" type="button" onClick={() => confirmWalls("local")}><Cpu className="size-3.5" aria-hidden="true" />本地模型排版</button>
+                    <button className="inline-flex items-center gap-1.5 bg-[#153b5b] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#0f2d46]" type="button" onClick={() => confirmWalls("local")}><Cpu className="size-3.5" aria-hidden="true" />智能排版</button>
                   </div>
                 )}
               </div>
 
               {state.status === "converting" ? (
                 <div className="grid min-h-[560px] place-items-center border border-slate-200 bg-white text-center shadow-sm">
-                  <div><LoaderCircle className="mx-auto size-9 animate-spin text-[#ff6b2c] motion-reduce:animate-none" aria-hidden="true" /><strong className="mt-4 block text-sm">{state.layoutMode === "ai" ? "AI 正在排版…" : "本地模型正在排版…"}</strong><p className="mt-2 text-xs text-slate-400">请保持当前页面打开</p></div>
+                  <div><LoaderCircle className="mx-auto size-9 animate-spin text-[#ff6b2c] motion-reduce:animate-none" aria-hidden="true" /><strong className="mt-4 block text-sm">{state.layoutMode === "ai" ? "AI 排版中…" : "智能排版中…"}</strong><p className="mt-2 text-xs text-slate-400">请保持当前页面打开</p></div>
                 </div>
               ) : (
                 <>
