@@ -9,7 +9,7 @@ from pathlib import Path
 import ezdxf
 from ezdxf import recover
 from ezdxf.document import Drawing
-from ezdxf.lldxf.const import DXFStructureError
+from ezdxf.lldxf.const import DXFError, DXFStructureError
 
 from .config import LAYERS
 from .geometry import left_normal, point_at, translated
@@ -38,9 +38,14 @@ def read_dxf(path: str | Path) -> Drawing:
     if suffix == ".dxf":
         detected_encoding = _detect_utf8(source)
         try:
-            doc = ezdxf.readfile(source, encoding=detected_encoding)
-        except DXFStructureError:
-            doc, _ = recover.readfile(source)
+            try:
+                doc = ezdxf.readfile(source, encoding=detected_encoding)
+            except DXFStructureError:
+                doc, _ = recover.readfile(source)
+        except DXFError as error:
+            raise ValueError(
+                "DXF 文件结构损坏且无法恢复，请用 CAD 软件执行 AUDIT 后重新另存为 DXF"
+            ) from error
         if detected_encoding == "utf-8" and doc.dxfversion < "AC1021":
             doc.encoding = "gbk"
         for insert in doc.query("INSERT"):
@@ -52,11 +57,19 @@ def read_dxf(path: str | Path) -> Drawing:
         if converter is None:
             raise RuntimeError("读取 DWG 需要先安装 GNU LibreDWG: brew install libredwg")
         converted = source.with_suffix(".dxf")
-        subprocess.run(
-            [converter, "--as", "r2013", "--overwrite", "-o", converted, source],
-            check=True,
-        )
-        return read_dxf(converted)
+        try:
+            subprocess.run(
+                [converter, "--as", "r2013", "--overwrite", "-o", converted, source],
+                check=True,
+                capture_output=True,
+            )
+            return read_dxf(converted)
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError("DWG 转换失败，请用 CAD 软件另存为 DXF 后重新上传") from error
+        except ValueError as error:
+            raise RuntimeError(
+                "当前转换器无法完整解析此 DWG，请用 AutoCAD 或 ODA 另存为 DXF 后重新上传"
+            ) from error
     raise ValueError(f"仅支持 DXF 或 DWG 文件: {source}")
 
 
@@ -81,7 +94,7 @@ def save_detected_walls(
     wall_doc.header["$INSUNITS"] = source_doc.header.get("$INSUNITS", 0)
     wall_doc.layers.add("CALCULATED_SURFACE", color=3)
     wall_doc.layers.add("CALCULATED_DOOR", color=2)
-    wall_doc.layers.add("CALCULATED_WINDOW", color=4)
+    wall_doc.layers.add("CALCULATED_WINDOW", color=6).rgb = (255, 79, 163)
     wall_doc.layers.add("CALCULATED_LOW_CONFIDENCE", color=30)
     modelspace = wall_doc.modelspace()
     for wall in walls:
@@ -115,3 +128,85 @@ def save_detected_walls(
             for first, second in zip(corners, (*corners[1:], corners[0])):
                 modelspace.add_line(first, second, dxfattribs={"layer": layer})
     save_dxf(wall_doc, path)
+
+
+def save_review_walls(
+    source_doc: Drawing,
+    candidates: Iterable[WallSegment],
+    accepted: Iterable[WallSegment],
+    path: str | Path,
+) -> dict[str, dict[str, str]]:
+    review_doc = source_doc
+    for layer in review_doc.layers:
+        layer.color = 8
+        layer.rgb = (154, 163, 168)
+    for block in review_doc.blocks:
+        for entity in block:
+            if entity.dxftype() in {"HATCH", "MPOLYGON", "SOLID", "TRACE", "WIPEOUT"}:
+                entity.destroy()
+                continue
+            if entity.dxf.is_supported("color"):
+                entity.dxf.color = 256
+            entity.dxf.discard("true_color")
+
+    for name, aci, rgb in (
+        ("CADMASTER_REVIEW_WALL", 3, (0, 255, 0)),
+        ("CADMASTER_REVIEW_DOOR", 2, (255, 255, 0)),
+        ("CADMASTER_REVIEW_WINDOW", 210, (255, 79, 163)),
+        ("CADMASTER_REVIEW_IGNORE", 8, (154, 163, 168)),
+    ):
+        layer = review_doc.layers.get(name) if name in review_doc.layers else review_doc.layers.add(name)
+        layer.color = aci
+        layer.rgb = rgb
+
+    accepted_walls = {wall.id: wall for wall in accepted}
+    handles: dict[str, dict[str, str]] = {}
+    modelspace = review_doc.modelspace()
+
+    def add_line(start, end, layer: str, item: dict[str, str]) -> None:
+        entity = modelspace.add_line(
+            (*start, 1.0),
+            (*end, 1.0),
+            dxfattribs={"layer": layer},
+        )
+        handles[str(entity.dxf.handle)] = item
+
+    for wall in candidates:
+        accepted_wall = accepted_walls.get(wall.id)
+        accepted_openings = {
+            opening.id: opening
+            for opening in accepted_wall.openings
+        } if accepted_wall else {}
+        normal = left_normal(wall.start, wall.end)
+        half_thickness = wall.thickness / 2.0
+        item = {"type": "wall", "id": wall.id, "wallId": wall.id}
+        wall_layer = "CADMASTER_REVIEW_WALL" if accepted_wall else "CADMASTER_REVIEW_IGNORE"
+        for offset in (-half_thickness, half_thickness):
+            add_line(
+                translated(wall.start, normal, offset),
+                translated(wall.end, normal, offset),
+                wall_layer,
+                item,
+            )
+
+        for opening in wall.openings:
+            accepted_opening = accepted_openings.get(opening.id)
+            layer = (
+                f"CADMASTER_REVIEW_{accepted_opening.kind.upper()}"
+                if accepted_opening
+                else "CADMASTER_REVIEW_IGNORE"
+            )
+            start = point_at(wall.start, wall.end, opening.start_offset, wall.length)
+            end = point_at(wall.start, wall.end, opening.end_offset, wall.length)
+            opening_item = {"type": "opening", "id": opening.id, "wallId": wall.id}
+            corners = (
+                translated(start, normal, -half_thickness),
+                translated(start, normal, half_thickness),
+                translated(end, normal, half_thickness),
+                translated(end, normal, -half_thickness),
+            )
+            for first, second in zip(corners, (*corners[1:], corners[0])):
+                add_line(first, second, layer, opening_item)
+
+    save_dxf(review_doc, path)
+    return handles

@@ -6,7 +6,7 @@ from ezdxf import bbox
 from ezdxf.document import Drawing
 from ezdxf.enums import MTextEntityAlignment
 
-from .config import DEFAULT_CONFIG
+from .config import DEFAULT_CONFIG, DrawingConfig
 from .geometry import angle_degrees, left_normal, point_at, translated
 from .panel_optimizer import Panel
 from .wall_detector import WallSegment, _effective_color
@@ -49,9 +49,10 @@ def _label_box(
     unit: tuple[float, float],
     normal: tuple[float, float],
     label: str,
+    config: DrawingConfig,
 ) -> Box:
-    half_width = len(label) * DEFAULT_CONFIG.text_height * 0.325
-    half_height = DEFAULT_CONFIG.text_height / 2.0
+    half_width = len(label) * config.text_height * 0.325
+    half_height = config.text_height / 2.0
     extent_x = abs(unit[0]) * half_width + abs(normal[0]) * half_height
     extent_y = abs(unit[1]) * half_width + abs(normal[1]) * half_height
     return center[0] - extent_x, center[1] - extent_y, center[0] + extent_x, center[1] + extent_y
@@ -61,6 +62,7 @@ def _label_side(
     wall: WallSegment,
     panels: list[Panel],
     obstacles: list[Box],
+    config: DrawingConfig,
 ) -> float:
     length = wall.length
     unit = (wall.end[0] - wall.start[0]) / length, (wall.end[1] - wall.start[1]) / length
@@ -70,9 +72,9 @@ def _label_side(
         score = 0
         for panel in panels:
             midpoint = point_at(wall.start, wall.end, (panel.start_offset + panel.end_offset) / 2.0, length)
-            center = translated(midpoint, normal, side * DEFAULT_CONFIG.text_offset)
+            center = translated(midpoint, normal, side * config.text_offset)
             label = str(round(panel.width))
-            candidate = _label_box(center, unit, normal, label)
+            candidate = _label_box(center, unit, normal, label, config)
             score += sum(_overlaps(candidate, obstacle) for obstacle in obstacles)
         scores[side] = score
     return -1.0 if scores[-1.0] < scores[1.0] else 1.0
@@ -83,15 +85,16 @@ def draw_wall_layout(
     wall: WallSegment,
     panels: Iterable[Panel],
     obstacles: list[Box],
+    config: DrawingConfig = DEFAULT_CONFIG,
 ) -> None:
     modelspace = doc.modelspace()
     panel_list = list(panels)
     normal = left_normal(wall.start, wall.end)
-    side = _label_side(wall, panel_list, obstacles)
+    side = _label_side(wall, panel_list, obstacles, config)
     delta_x = wall.end[0] - wall.start[0]
     rotation = (
         90.0
-        if abs(delta_x) <= DEFAULT_CONFIG.tolerance
+        if abs(delta_x) <= config.tolerance
         else angle_degrees(wall.start, wall.end) % 360.0
     )
     if 90.0 < rotation <= 270.0:
@@ -104,12 +107,12 @@ def draw_wall_layout(
             (panel.start_offset + panel.end_offset) / 2.0,
             wall.length,
         )
-        label_at = translated(midpoint, normal, side * DEFAULT_CONFIG.text_offset)
+        label_at = translated(midpoint, normal, side * config.text_offset)
         modelspace.add_mtext(
             str(round(panel.width)),
             dxfattribs={
                 "layer": "PANEL_TEXT",
-                "char_height": DEFAULT_CONFIG.text_height,
+                "char_height": config.text_height,
             },
         ).set_location(
             label_at,
@@ -119,10 +122,16 @@ def draw_wall_layout(
 
     half_joint = wall.thickness / 2.0
     for panel, next_panel in zip(panel_list, panel_list[1:]):
+        if any(
+            panel.end_offset <= opening.start_offset
+            and opening.end_offset <= next_panel.start_offset
+            for opening in wall.openings
+        ):
+            continue
         center = point_at(
             wall.start,
             wall.end,
-            (panel.end_offset + next_panel.start_offset) / 2.0,
+            next_panel.start_offset,
             wall.length,
         )
         modelspace.add_line(
