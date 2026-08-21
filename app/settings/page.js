@@ -60,6 +60,7 @@ function formFromPreset(preset) {
       standard_widths: preset.materials.standard_widths.join(", "),
     },
     ceiling: { ...preset.ceiling },
+    ai: { ...preset.ai },
   }
 }
 
@@ -309,7 +310,7 @@ export default function SettingsPage() {
                   <label className={WIDE_FIELD_CLASS}>
                     <span>
                       <b>墙体 ACI 颜色</b>
-                      <small>本地模式只提取这些颜色；AI 模式把它们作为可靠碎线依据</small>
+                      <small>本地识别只提取这些颜色，并用它们恢复可靠碎线</small>
                     </span>
                     <input
                       type="text"
@@ -428,6 +429,26 @@ export default function SettingsPage() {
                     onChange={(name, value) => updateSection("drawing", name, value)}
                   />
                 </div>
+              </fieldset>
+
+              <fieldset className={GROUP_CLASS}>
+                <legend>
+                  <span>06</span>
+                  <strong>AI 排版</strong>
+                  <small>模型连接信息继续从服务端 .env 读取</small>
+                </legend>
+                <label className="flex items-center justify-between gap-4 border border-slate-200 bg-slate-50/60 p-4">
+                  <span>
+                    <b className="block text-xs font-semibold">启用模型思考</b>
+                    <small className="mt-1 block text-[10px] leading-4 text-slate-400">默认关闭；仅在当前模型支持 thinking 时开启</small>
+                  </span>
+                  <input
+                    className="size-5 accent-[#ff6b2c]"
+                    type="checkbox"
+                    checked={draft.ai.thinking}
+                    onChange={(event) => updateSection("ai", "thinking", event.target.checked)}
+                  />
+                </label>
               </fieldset>
             </>
           ) : (

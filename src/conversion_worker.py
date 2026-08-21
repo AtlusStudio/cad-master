@@ -6,13 +6,12 @@ import os
 from dataclasses import asdict
 from pathlib import Path
 
-from .ai_recognizer import (
-    apply_recognition_decisions,
-    build_detected_model,
-    build_recognition_input,
-    request_recognition,
+from .ai_layout import request_ceiling_strategy, validate_ceiling_strategy
+from .ceiling_layout import (
+    build_ceiling_strategy_input,
+    calculate_ceiling_layout,
+    draw_ceiling_layout,
 )
-from .ceiling_layout import calculate_ceiling_layout, draw_ceiling_layout
 from .config import CeilingConfig, DrawingConfig, MaterialConfig
 from .dxf_reader import (
     ensure_panel_layers,
@@ -43,7 +42,7 @@ def load_env() -> None:
             os.environ[name] = value.strip().strip('"').strip("'")
 
 
-def load_preset(path: str | Path) -> tuple[DrawingConfig, MaterialConfig, CeilingConfig]:
+def load_preset(path: str | Path) -> tuple[DrawingConfig, MaterialConfig, CeilingConfig, bool]:
     source = Path(path)
     if not source.is_file():
         raise FileNotFoundError(f"找不到设置预设: {source}")
@@ -124,6 +123,10 @@ def load_preset(path: str | Path) -> tuple[DrawingConfig, MaterialConfig, Ceilin
         ) > 1e-6
     ):
         raise ValueError("吊顶板规格或标注参数无效，三个排板权重必须为非负数且合计 100%")
+    ai_data = data.get("ai", {})
+    thinking = ai_data.get("thinking", False)
+    if not isinstance(thinking, bool):
+        raise ValueError("ai.thinking 必须是布尔值")
     return (
         drawing,
         MaterialConfig(
@@ -135,13 +138,14 @@ def load_preset(path: str | Path) -> tuple[DrawingConfig, MaterialConfig, Ceilin
             end_tolerance,
         ),
         ceiling,
+        thinking,
     )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="CMS 转换阶段 worker")
-    parser.add_argument("--stage", required=True, choices=("detect", "recognize", "generate"))
-    parser.add_argument("--mode", required=True, choices=("ai", "local"))
+    parser.add_argument("--stage", required=True, choices=("detect", "layout", "generate"))
+    parser.add_argument("--layout-mode", choices=("ai", "local"), default="local")
     parser.add_argument("--input", required=True)
     parser.add_argument("--preset", required=True)
     parser.add_argument("--output", required=True)
@@ -218,7 +222,7 @@ def _write_review(
 
 
 def detect_stage(args: argparse.Namespace) -> None:
-    drawing, _, _ = load_preset(args.preset)
+    drawing, _, _, _ = load_preset(args.preset)
     doc = read_dxf(args.input)
     drawing_path = (
         Path(args.input).with_suffix(".dxf")
@@ -228,15 +232,10 @@ def detect_stage(args: argparse.Namespace) -> None:
     candidates = detect_walls(
         doc,
         drawing,
-        include_all_colors=args.mode == "ai",
+        include_all_colors=False,
     )
     if not candidates.walls:
-        message = (
-            "未识别到颜色和墙厚符合配置的双线墙"
-            if args.mode == "local"
-            else "未提取到墙厚符合配置的双线墙候选"
-        )
-        raise ValueError(message)
+        raise ValueError("未识别到颜色和墙厚符合配置的双线墙")
     _write_checkpoint(
         args.output,
         {
@@ -244,15 +243,16 @@ def detect_stage(args: argparse.Namespace) -> None:
             "candidates": asdict(candidates),
         },
     )
-    if args.mode == "local":
-        _write_review(args.output, doc, candidates, candidates)
+    _write_review(args.output, doc, candidates, candidates)
 
 
-def recognize_stage(args: argparse.Namespace) -> None:
+def layout_stage(args: argparse.Namespace) -> None:
+    if args.layout_mode != "ai":
+        return
     load_env()
     checkpoint = _read_checkpoint(args.output)
-    candidates = _detection_from_data(checkpoint["candidates"])
-    doc = read_dxf(checkpoint["drawing_path"])
+    detected = _detection_from_data(checkpoint["detected"])
+    drawing, _, ceiling, thinking = load_preset(args.preset)
     base_url = os.environ.get("CAD_AI_BASE_URL")
     api_key = os.environ.get("CAD_AI_API_KEY")
     model = os.environ.get("CAD_AI_MODEL")
@@ -266,34 +266,35 @@ def recognize_stage(args: argparse.Namespace) -> None:
         if not value
     ]
     if missing:
-        raise RuntimeError(f"默认 AI 识别缺少环境变量: {', '.join(missing)}")
-    recognition_input = build_recognition_input(doc, candidates)
-    decisions = request_recognition(recognition_input, base_url, api_key, model)
-    output_directory = Path(args.output).parent
-    (output_directory / "ai_recognition.json").write_text(
-        json.dumps(decisions, ensure_ascii=False, indent=2),
+        raise RuntimeError(f"AI 排版缺少环境变量: {', '.join(missing)}")
+    payload = build_ceiling_strategy_input(
+        detected.walls,
+        drawing.junction_reserve,
+        ceiling,
+    )
+    response = request_ceiling_strategy(
+        payload,
+        base_url,
+        api_key,
+        model,
+        thinking,
+        Path(args.output).parent / "ai_layout.log",
+    )
+    strategy = validate_ceiling_strategy(payload, response)
+    (Path(args.output).parent / "ai_layout.json").write_text(
+        json.dumps(response, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    (output_directory / "detected_model.json").write_text(
-        json.dumps(
-            build_detected_model(args.input, doc, candidates, decisions, model),
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    detected = apply_recognition_decisions(candidates, decisions)
-    checkpoint["detected"] = asdict(detected)
+    checkpoint["ai_ceiling_strategy"] = strategy
     _write_checkpoint(args.output, checkpoint)
-    _write_review(args.output, doc, candidates, detected)
 
 
 def generate_stage(args: argparse.Namespace) -> None:
     checkpoint = _read_checkpoint(args.output)
     if "detected" not in checkpoint:
-        raise ValueError("缺少语义识别阶段的 checkpoint")
+        raise ValueError("缺少复核后的本地识别结果")
     detected = _detection_from_data(checkpoint["detected"])
-    drawing, materials, ceiling = load_preset(args.preset)
+    drawing, materials, ceiling, _ = load_preset(args.preset)
     output = Path(args.output)
     ceiling_output = output.parent / "ceiling_panel_layout_result.dxf"
     doc = read_dxf(checkpoint["drawing_path"])
@@ -309,11 +310,15 @@ def generate_stage(args: argparse.Namespace) -> None:
         all_panels.extend(panels)
 
     ceiling_doc = read_dxf(checkpoint["drawing_path"])
+    strategy = checkpoint.get("ai_ceiling_strategy") if args.layout_mode == "ai" else None
+    if args.layout_mode == "ai" and strategy is None:
+        raise ValueError("缺少 AI 吊顶全局排版策略")
     ceiling_layout = calculate_ceiling_layout(
         ceiling_doc,
         detected.walls,
         drawing.junction_reserve,
         ceiling,
+        strategy,
     )
     draw_ceiling_layout(ceiling_doc, ceiling_layout, ceiling)
 
@@ -335,7 +340,7 @@ def main() -> None:
     try:
         {
             "detect": detect_stage,
-            "recognize": recognize_stage,
+            "layout": layout_stage,
             "generate": generate_stage,
         }[args.stage](args)
     except (FileNotFoundError, RuntimeError, ValueError) as error:

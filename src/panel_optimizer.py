@@ -109,12 +109,16 @@ def optimize_span(
         sequence = min(exact, key=lambda item: (item[0], *_sequence_key(item[1], choices)))[1]
         return [PanelSize(width, width) for width in sequence]
 
-    usable_length = length - joint_gap * 2
-    aligned_standard = [
-        (abs(usable_length - sum(sequence)), sequence)
-        for sequence in states
-        if sequence and abs(usable_length - sum(sequence)) <= end_tolerance
-    ]
+    # Joints are drawn only between adjacent panels; the last panel absorbs the
+    # remaining tail.  Validate against that geometry instead of a global
+    # "usable length", otherwise rounding tails can silently exceed the limit.
+    aligned_standard = []
+    for sequence in states:
+        if not sequence:
+            continue
+        error = length - sum(sequence) - joint_gap * (len(sequence) - 1)
+        if abs(error) <= end_tolerance:
+            aligned_standard.append((abs(error), sequence))
     if aligned_standard:
         sequence = min(
             aligned_standard,
@@ -129,9 +133,10 @@ def optimize_span(
         standard_total = sum(sequence)
         order_key = _sequence_key(sequence, choices)[2:]
 
-        one_cut_raw = usable_length - standard_total
+        one_cut_joints = joint_gap * len(sequence)
+        one_cut_raw = length - standard_total - one_cut_joints
         one_cut = _round_to_step(one_cut_raw, cut_step)
-        one_cut_error = usable_length - standard_total - one_cut
+        one_cut_error = length - standard_total - one_cut - one_cut_joints
         if (
             min_cut_width <= one_cut <= max(choices)
             and abs(one_cut_error) <= end_tolerance
@@ -146,9 +151,13 @@ def optimize_span(
             )
             candidates.append((key, sizes))
 
-        two_cut_raw = (usable_length - standard_total) / 2.0
+        two_cut_joints = joint_gap * (len(sequence) + 1)
+        two_cut_raw = (length - standard_total - two_cut_joints) / 2.0
         two_cut = _round_to_step(two_cut_raw, cut_step)
-        two_cut_error = usable_length - standard_total - two_cut * 2
+        # Each symmetric end cut absorbs its own rounding tail, so the limit
+        # applies per end (the total deviation across both ends may reach
+        # 2 * end_tolerance).
+        two_cut_error = two_cut - two_cut_raw
         if (
             min_cut_width <= two_cut <= max(choices)
             and abs(two_cut_error) <= end_tolerance

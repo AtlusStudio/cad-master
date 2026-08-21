@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 
 export const metadata = {
   title: "CAD Master｜洁净室自动排板",
-  description: "上传 CAD 图纸，使用 AI 或本地规则完成墙板与吊顶排版。",
+  description: "上传 CAD 图纸，识别墙体与门窗，再使用 AI 排版或智能排版。",
 };
 
 export default function RootLayout({ children }) {
