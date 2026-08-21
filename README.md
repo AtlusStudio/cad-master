@@ -71,8 +71,6 @@ AI 不直接读取 CAD 图像，也不自行创建或修改墙体、洞口、板
 - `data/jobs/<任务号>/ceiling_panel_layout_result.dxf`（最外层墙面围成区域的吊顶彩钢板排版）
 - `data/jobs/<任务号>/detected_walls.dxf`（完整展示所有参与计算的墙面；绿色为连续计算范围，黄色为门洞，粉色为窗洞）
 - `data/jobs/<任务号>/panel_schedule.csv`
-- `data/jobs/<任务号>/panel_schedule.json`
-- `data/jobs/<任务号>/preset.json`（本次任务实际使用的设置预设快照）
 
 ## 设置预设
 

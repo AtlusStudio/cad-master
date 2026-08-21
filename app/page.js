@@ -5,7 +5,6 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
-  CheckCircle2,
   CircleAlert,
   Cpu,
   Download,
@@ -24,8 +23,6 @@ const FILE_LABELS = {
   "ceiling_panel_layout_result.dxf": "吊顶排版图",
   "detected_walls.dxf": "墙体识别图",
   "panel_schedule.csv": "材料清单 CSV",
-  "panel_schedule.json": "材料清单 JSON",
-  "preset.json": "本次设置预设",
 }
 
 function formatSize(size) {
@@ -277,20 +274,16 @@ export default function Home() {
                 <button className="inline-flex items-center gap-1.5 border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold hover:bg-slate-50" type="button" onClick={() => { startedFile.current = null; setCadFile(null); setState({ status: "idle" }) }}><FileOutput className="size-3.5" aria-hidden="true" />新建任务</button>
               </div>
 
-              <div className="mb-4 flex items-center gap-3 bg-emerald-50 p-4"><CheckCircle2 className="size-7 text-emerald-500" aria-hidden="true" /><strong className="text-sm text-emerald-900">排版图和材料清单已生成</strong></div>
-              <CadResultViewer files={state.files} />
-
-              <div className="mt-5 border border-slate-200 bg-white shadow-sm">
-                <div className="border-b border-slate-200 px-5 py-4"><h3 className="text-sm font-bold">下载全部结果</h3></div>
-                <div className="grid gap-px bg-slate-200 sm:grid-cols-2 xl:grid-cols-3">
-                  {state.files.map((file) => (
-                    <a className="group flex items-center justify-between bg-white p-4 hover:bg-slate-50" key={file.name} href={file.url} download>
-                      <span><strong className="block text-xs">{FILE_LABELS[file.name] || file.name}</strong><small className="mt-1 block font-mono text-[9px] text-slate-400">{file.name}</small></span>
-                      <Download className="size-4 text-[#153b5b] group-hover:text-[#ff6b2c]" aria-hidden="true" />
-                    </a>
-                  ))}
-                </div>
+              <div className="mb-5 grid gap-px overflow-hidden border border-slate-200 bg-slate-200 shadow-sm sm:grid-cols-2 xl:grid-cols-4">
+                {state.files.map((file) => (
+                  <a className="group flex items-center justify-between bg-white p-5 hover:bg-slate-50" key={file.name} href={file.url} download>
+                    <span><strong className="block text-xs">{FILE_LABELS[file.name] || file.name}</strong><small className="mt-1 block font-mono text-[9px] text-slate-400">{file.name}</small></span>
+                    <Download className="size-4 text-[#153b5b] group-hover:text-[#ff6b2c]" aria-hidden="true" />
+                  </a>
+                ))}
               </div>
+
+              <CadResultViewer files={state.files} />
             </section>
           )}
         </div>
