@@ -9,7 +9,7 @@ from pathlib import Path
 import ezdxf
 from ezdxf import recover
 from ezdxf.document import Drawing
-from ezdxf.lldxf.const import DXFStructureError
+from ezdxf.lldxf.const import DXFError, DXFStructureError
 
 from .config import LAYERS
 from .geometry import left_normal, point_at, translated
@@ -38,9 +38,14 @@ def read_dxf(path: str | Path) -> Drawing:
     if suffix == ".dxf":
         detected_encoding = _detect_utf8(source)
         try:
-            doc = ezdxf.readfile(source, encoding=detected_encoding)
-        except DXFStructureError:
-            doc, _ = recover.readfile(source)
+            try:
+                doc = ezdxf.readfile(source, encoding=detected_encoding)
+            except DXFStructureError:
+                doc, _ = recover.readfile(source)
+        except DXFError as error:
+            raise ValueError(
+                "DXF 文件结构损坏且无法恢复，请用 CAD 软件执行 AUDIT 后重新另存为 DXF"
+            ) from error
         if detected_encoding == "utf-8" and doc.dxfversion < "AC1021":
             doc.encoding = "gbk"
         for insert in doc.query("INSERT"):
@@ -52,11 +57,19 @@ def read_dxf(path: str | Path) -> Drawing:
         if converter is None:
             raise RuntimeError("读取 DWG 需要先安装 GNU LibreDWG: brew install libredwg")
         converted = source.with_suffix(".dxf")
-        subprocess.run(
-            [converter, "--as", "r2013", "--overwrite", "-o", converted, source],
-            check=True,
-        )
-        return read_dxf(converted)
+        try:
+            subprocess.run(
+                [converter, "--as", "r2013", "--overwrite", "-o", converted, source],
+                check=True,
+                capture_output=True,
+            )
+            return read_dxf(converted)
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError("DWG 转换失败，请用 CAD 软件另存为 DXF 后重新上传") from error
+        except ValueError as error:
+            raise RuntimeError(
+                "当前转换器无法完整解析此 DWG，请用 AutoCAD 或 ODA 另存为 DXF 后重新上传"
+            ) from error
     raise ValueError(f"仅支持 DXF 或 DWG 文件: {source}")
 
 
@@ -132,7 +145,8 @@ def save_review_walls(
             if entity.dxftype() in {"HATCH", "MPOLYGON", "SOLID", "TRACE", "WIPEOUT"}:
                 entity.destroy()
                 continue
-            entity.dxf.color = 256
+            if entity.dxf.is_supported("color"):
+                entity.dxf.color = 256
             entity.dxf.discard("true_color")
 
     for name, aci, rgb in (

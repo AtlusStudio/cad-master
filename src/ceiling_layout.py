@@ -225,27 +225,43 @@ def _interior_points(polygon: Polygon) -> tuple[tuple[Point, ...], ...]:
     )
 
 
+def _polygon_parts(geometry: BaseGeometry) -> list[Polygon]:
+    return [
+        part
+        for part in get_parts(geometry)
+        if isinstance(part, Polygon) and part.area > SNAP_TOLERANCE
+    ]
+
+
+def _polygonal_geometry(geometry: BaseGeometry) -> BaseGeometry:
+    parts = _polygon_parts(geometry)
+    return union_all(parts) if parts else Polygon()
+
+
 def _solid_fill_geometry(doc: Drawing) -> BaseGeometry:
     def hatch_polygon(paths: list) -> BaseGeometry:
         exterior, *holes = paths
         polygon = Polygon(
             [(float(point.x), float(point.y)) for point in exterior.flattening(SNAP_TOLERANCE)]
         )
-        return difference(
-            polygon,
+        holes_geometry = _polygonal_geometry(
             union_all(tuple(hatch_polygon(hole) for hole in holes), grid_size=SNAP_TOLERANCE),
-            grid_size=SNAP_TOLERANCE,
+        )
+        return _polygonal_geometry(
+            difference(polygon, holes_geometry, grid_size=SNAP_TOLERANCE)
         )
 
-    return union_all(
-        tuple(
-            hatch_polygon(paths)
-            for entity, _ in _iter_all_entities(doc, doc.modelspace())
-            if entity.dxftype() in {"HATCH", "MPOLYGON"}
-            and entity.dxf.get("solid_fill", 0)
-            for paths in make_polygon_structure(from_hatch(entity))
+    return _polygonal_geometry(
+        union_all(
+            tuple(
+                hatch_polygon(paths)
+                for entity, _ in _iter_all_entities(doc, doc.modelspace())
+                if entity.dxftype() in {"HATCH", "MPOLYGON"}
+                and entity.dxf.get("solid_fill", 0)
+                for paths in make_polygon_structure(from_hatch(entity))
+            ),
+            grid_size=SNAP_TOLERANCE,
         ),
-        grid_size=SNAP_TOLERANCE,
     )
 
 
@@ -268,14 +284,6 @@ def _panel_label(panel: CeilingPanel) -> tuple[Point, float]:
         point = polygon.representative_point()
         center = float(point.x), float(point.y)
     return center, 0.0 if max_x - min_x >= max_y - min_y else 90.0
-
-
-def _polygon_parts(geometry: BaseGeometry) -> list[Polygon]:
-    return [
-        part
-        for part in get_parts(geometry)
-        if isinstance(part, Polygon) and part.area > SNAP_TOLERANCE
-    ]
 
 
 def _axes(boundary: list[Point]) -> tuple[Point, Point]:

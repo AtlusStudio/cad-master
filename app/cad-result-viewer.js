@@ -1,14 +1,12 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Download, LoaderCircle } from "lucide-react"
+import { LoaderCircle } from "lucide-react"
 
 export default function CadResultViewer({ files }) {
-  const drawings = files.filter((file) => file.name.endsWith(".dxf"))
-  const [selectedName, setSelectedName] = useState(drawings[0]?.name || "")
+  const selected = files.find((file) => file.name.endsWith(".dxf"))
   const [viewerState, setViewerState] = useState("loading")
   const containerRef = useRef(null)
-  const selected = drawings.find((file) => file.name === selectedName) || drawings[0]
 
   useEffect(() => {
     if (!selected) return
@@ -55,24 +53,6 @@ export default function CadResultViewer({ files }) {
 
   return (
     <div className="overflow-hidden border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
-          <span className="font-mono text-[9px] font-bold tracking-[.16em] text-[#ff6b2c]">CAD VIEWER</span>
-          {drawings.length > 1 && (
-            <select
-              className="h-9 border border-slate-300 bg-white px-3 text-xs font-semibold outline-none focus:border-[#153b5b]"
-              value={selected.name}
-              onChange={(event) => setSelectedName(event.target.value)}
-              aria-label="选择预览图纸"
-            >
-              {drawings.map((file) => <option key={file.name} value={file.name}>{file.name}</option>)}
-            </select>
-          )}
-        </div>
-        <a className="inline-flex h-9 items-center justify-center gap-2 bg-[#ff6b2c] px-4 text-xs font-bold text-white hover:bg-[#e9551b]" href={selected.url} download>
-          <Download className="size-3.5" aria-hidden="true" />下载当前图纸
-        </a>
-      </div>
       <div className="relative h-[520px] min-h-[360px] bg-[#08111b] lg:h-[640px]">
         <div ref={containerRef} className="size-full" />
         {viewerState !== "ready" && (

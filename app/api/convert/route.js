@@ -14,8 +14,6 @@ const OUTPUT_FILES = new Set([
   "ceiling_panel_layout_result.dxf",
   "detected_walls.dxf",
   "panel_schedule.csv",
-  "panel_schedule.json",
-  "preset.json",
 ])
 
 const REVIEW_STAGES = [["detect", "本地识别墙体与门窗…"]]
@@ -141,11 +139,21 @@ async function sendReview(send, checkpoint, job, preset) {
   })
 }
 
-function runStage(stage, args) {
+function runStage(stage, args, preset) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       "uv",
-      ["run", "python", "-m", "src.conversion_worker", "--stage", stage, ...args],
+      [
+        "run",
+        "python",
+        "-m",
+        "src.conversion_worker",
+        "--stage",
+        stage,
+        "--preset-json",
+        JSON.stringify(preset),
+        ...args,
+      ],
       { cwd: process.cwd() },
     )
     let output = ""
@@ -154,17 +162,18 @@ function runStage(stage, args) {
       output = `${output}${chunk}`.slice(-16000)
     })
     child.stderr.on("data", (chunk) => {
+      process.stderr.write(chunk)
       output = `${output}${chunk}`.slice(-16000)
     })
     child.on("error", reject)
     child.on("close", (code) => {
       if (code === 0) resolve(output)
-      else reject(new Error(output.trim() || `${stage} 阶段退出，状态码 ${code}`))
+      else reject(new Error(output.match(/错误:[^\r\n]*/g)?.at(-1) || `${stage} 阶段失败`))
     })
   })
 }
 
-function streamStages(stages, args, done) {
+function streamStages(stages, args, preset, done) {
   const encoder = new TextEncoder()
   return new Response(
     new ReadableStream({
@@ -173,7 +182,7 @@ function streamStages(stages, args, done) {
         try {
           for (const [stage, message] of stages) {
             send({ type: "step", stage, message })
-            await runStage(stage, args)
+            await runStage(stage, args, preset)
           }
           await done(send)
         } catch (error) {
@@ -199,6 +208,10 @@ async function confirmConversion(request) {
 
   const directory = path.join(process.cwd(), "data", "jobs", job)
   const meta = JSON.parse(await readFile(path.join(directory, "conversion_request.json"), "utf8"))
+  const preset = await getPreset(meta.presetId)
+  if (preset.updatedAt !== meta.presetUpdatedAt) {
+    return Response.json({ error: "设置预设已被修改，请重新上传图纸。" }, { status: 409 })
+  }
   const checkpointPath = path.join(directory, "conversion_checkpoint.json")
   const checkpoint = JSON.parse(await readFile(checkpointPath, "utf8"))
   const candidates = checkpoint.candidates.walls
@@ -415,6 +428,7 @@ async function confirmConversion(request) {
       ["generate", "生成排版图和材料清单…"],
     ],
     [...meta.args, "--layout-mode", layoutMode],
+    preset,
     async (send) => {
       const files = (await readdir(directory))
         .filter((name) => OUTPUT_FILES.has(name))
@@ -465,17 +479,13 @@ export async function POST(request) {
     const directory = path.join(process.cwd(), "data", "jobs", job)
     const inputPath = path.join(directory, `source${extension}`)
     const outputPath = path.join(directory, "panel_layout_result.dxf")
-    const presetPath = path.join(directory, "preset.json")
 
     await mkdir(directory, { recursive: true })
     await writeFile(inputPath, content)
-    await writeFile(presetPath, JSON.stringify(preset, null, 2))
 
     const args = [
       "--input",
       inputPath,
-      "--preset",
-      presetPath,
       "--output",
       outputPath,
     ]
@@ -487,6 +497,7 @@ export async function POST(request) {
         sourceName: cad.name,
         presetId: preset.id,
         presetName: preset.name,
+        presetUpdatedAt: preset.updatedAt,
         presetHash,
       }),
     )
@@ -496,13 +507,13 @@ export async function POST(request) {
       inputPath,
     )
     if (cached) {
-      return streamStages([], args, async (send) => {
+      return streamStages([], args, preset, async (send) => {
         send({ type: "step", stage: "cache", message: "已读取本地识别缓存。" })
         await sendReview(send, cached, job, preset)
       })
     }
 
-    return streamStages(REVIEW_STAGES, args, async (send) => {
+    return streamStages(REVIEW_STAGES, args, preset, async (send) => {
       const checkpoint = JSON.parse(
         await readFile(path.join(directory, "conversion_checkpoint.json"), "utf8"),
       )

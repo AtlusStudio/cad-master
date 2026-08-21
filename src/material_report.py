@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import json
 from collections import defaultdict
 from pathlib import Path
 
@@ -61,7 +60,3 @@ def write_schedule(panels: list[Panel], output_dir: str | Path) -> None:
         writer = csv.DictWriter(file, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
-    (directory / "panel_schedule.json").write_text(
-        json.dumps(rows, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )

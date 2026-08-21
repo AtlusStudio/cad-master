@@ -323,7 +323,6 @@ export default function CadReview({ walls, entityMap, reviewUrl, onChange }) {
         }
         manager.curView.selectionSet.events.selectionAdded.addEventListener(selectionListener)
         restoreManualEntities(cad, manager)
-        applyColors(manager, wallsRef.current)
         setViewerState("ready")
       } catch (error) {
         if (!cancelled) setViewerState(error.message)
@@ -346,10 +345,10 @@ export default function CadReview({ walls, entityMap, reviewUrl, onChange }) {
 
   useEffect(() => {
     wallsRef.current = walls
-    if (managerRef.current && viewerState === "ready") {
+    if (managerRef.current) {
       applyColors(managerRef.current, walls)
     }
-  }, [walls, viewerState])
+  }, [walls])
 
   function classify(kind) {
     const currentWalls = wallsRef.current

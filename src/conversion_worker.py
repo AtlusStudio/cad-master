@@ -42,11 +42,8 @@ def load_env() -> None:
             os.environ[name] = value.strip().strip('"').strip("'")
 
 
-def load_preset(path: str | Path) -> tuple[DrawingConfig, MaterialConfig, CeilingConfig, bool]:
-    source = Path(path)
-    if not source.is_file():
-        raise FileNotFoundError(f"找不到设置预设: {source}")
-    data = json.loads(source.read_text(encoding="utf-8"))
+def load_preset(source: str) -> tuple[DrawingConfig, MaterialConfig, CeilingConfig, bool]:
+    data = json.loads(source)
     if not isinstance(data, dict):
         raise ValueError("设置预设顶层必须是对象")
     drawing_data = data.get("drawing")
@@ -147,7 +144,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stage", required=True, choices=("detect", "layout", "generate"))
     parser.add_argument("--layout-mode", choices=("ai", "local"), default="local")
     parser.add_argument("--input", required=True)
-    parser.add_argument("--preset", required=True)
+    parser.add_argument("--preset-json", required=True)
     parser.add_argument("--output", required=True)
     return parser.parse_args()
 
@@ -222,7 +219,7 @@ def _write_review(
 
 
 def detect_stage(args: argparse.Namespace) -> None:
-    drawing, _, _, _ = load_preset(args.preset)
+    drawing, _, _, _ = load_preset(args.preset_json)
     doc = read_dxf(args.input)
     drawing_path = (
         Path(args.input).with_suffix(".dxf")
@@ -252,7 +249,7 @@ def layout_stage(args: argparse.Namespace) -> None:
     load_env()
     checkpoint = _read_checkpoint(args.output)
     detected = _detection_from_data(checkpoint["detected"])
-    drawing, _, ceiling, thinking = load_preset(args.preset)
+    drawing, _, ceiling, thinking = load_preset(args.preset_json)
     base_url = os.environ.get("CAD_AI_BASE_URL")
     api_key = os.environ.get("CAD_AI_API_KEY")
     model = os.environ.get("CAD_AI_MODEL")
@@ -294,7 +291,7 @@ def generate_stage(args: argparse.Namespace) -> None:
     if "detected" not in checkpoint:
         raise ValueError("缺少复核后的本地识别结果")
     detected = _detection_from_data(checkpoint["detected"])
-    drawing, materials, ceiling, _ = load_preset(args.preset)
+    drawing, materials, ceiling, _ = load_preset(args.preset_json)
     output = Path(args.output)
     ceiling_output = output.parent / "ceiling_panel_layout_result.dxf"
     doc = read_dxf(checkpoint["drawing_path"])

@@ -8,8 +8,6 @@ const OUTPUT_FILES = new Set([
   "ceiling_panel_layout_result.dxf",
   "detected_walls.dxf",
   "panel_schedule.csv",
-  "panel_schedule.json",
-  "preset.json",
   "review_candidates.dxf",
 ])
 
