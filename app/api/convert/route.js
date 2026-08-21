@@ -154,12 +154,13 @@ function runStage(stage, args) {
       output = `${output}${chunk}`.slice(-16000)
     })
     child.stderr.on("data", (chunk) => {
+      process.stderr.write(chunk)
       output = `${output}${chunk}`.slice(-16000)
     })
     child.on("error", reject)
     child.on("close", (code) => {
       if (code === 0) resolve(output)
-      else reject(new Error(output.trim() || `${stage} 阶段退出，状态码 ${code}`))
+      else reject(new Error(output.match(/错误:[^\r\n]*/g)?.at(-1) || `${stage} 阶段失败`))
     })
   })
 }
