@@ -402,12 +402,15 @@ def calculate_ceiling_layout(
     units: list[list[int]] = []
     room_units: dict[int, int] = {}
     unit_directions: list[str] = []
+    unit_corridors: list[bool] = []
     if strategy is not None:
+        corridor_ids = set(strategy.get("corridor_room_ids", ()))
         for group in strategy["groups"]:
             unit_index = len(units)
             unit = [int(room_id[1:]) - 1 for room_id in group["room_ids"]]
             units.append(unit)
             unit_directions.append(group["direction"])
+            unit_corridors.append(len(group["room_ids"]) == 1 and group["room_ids"][0] in corridor_ids)
             for room_index in unit:
                 room_units[room_index] = unit_index
         if sorted(room_units) != list(range(len(rooms))):
@@ -441,6 +444,7 @@ def calculate_ceiling_layout(
                 unit_index = len(units)
                 units.append([room_index])
                 unit_directions.append("auto")
+                unit_corridors.append(False)
             room_units[room_index] = unit_index
 
     wall_shapes = {
@@ -538,7 +542,11 @@ def calculate_ceiling_layout(
                 tuple(regions[room_index] for room_index in units[unit_index]),
                 grid_size=SNAP_TOLERANCE,
             )
-            plan = _layout_unit(unit_region, config, unit_directions[unit_index])
+            plan = (
+                _layout_corridor(unit_region, config)
+                if unit_corridors[unit_index]
+                else _layout_unit(unit_region, config, unit_directions[unit_index])
+            )
             scores.append(
                 _layout_score(
                     plan.panels,
@@ -575,7 +583,9 @@ def calculate_ceiling_layout(
         for unit in units
     ]
     base_plans = [
-        _layout_unit(region, config, unit_directions[unit_index])
+        _layout_corridor(region, config)
+        if unit_corridors[unit_index]
+        else _layout_unit(region, config, unit_directions[unit_index])
         for unit_index, region in enumerate(unit_regions)
     ]
 
@@ -715,6 +725,75 @@ def _layout_unit(
     return min(
         _layout_candidates(region, config, direction),
         key=lambda plan: _layout_score(plan.panels, config, region.area),
+    )
+
+
+def _layout_corridor(
+    region: BaseGeometry,
+    config: CeilingConfig,
+) -> _LayoutPlan:
+    polygon = max(_polygon_parts(region), key=lambda part: part.area)
+    length_axis, width_axis = _axes(_exterior_points(polygon))
+    local_region = affine_transform(
+        region,
+        [length_axis[0], length_axis[1], width_axis[0], width_axis[1], 0, 0],
+    )
+    local_polygon = max(_polygon_parts(local_region), key=lambda part: part.area)
+    coordinates = list(local_polygon.exterior.coords[:-1])
+    orientation = 1.0 if local_polygon.exterior.is_ccw else -1.0
+    min_x, min_y, max_x, max_y = local_region.bounds
+    cuts = {min_y, max_y}
+    for previous, current, following in zip(
+        coordinates[-1:] + coordinates[:-1],
+        coordinates,
+        coordinates[1:] + coordinates[:1],
+    ):
+        cross = (
+            (current[0] - previous[0]) * (following[1] - current[1])
+            - (current[1] - previous[1]) * (following[0] - current[0])
+        )
+        if cross * orientation < 0:
+            cuts.add(current[1])
+
+    pieces = []
+    for start, end in zip(sorted(cuts), sorted(cuts)[1:]):
+        if end - start <= SNAP_TOLERANCE:
+            continue
+        local_pieces = intersection(
+            local_region,
+            box(min_x - SNAP_TOLERANCE, start, max_x + SNAP_TOLERANCE, end),
+            grid_size=SNAP_TOLERANCE,
+        )
+        pieces.extend(
+            affine_transform(
+                piece,
+                [length_axis[0], width_axis[0], length_axis[1], width_axis[1], 0, 0],
+            )
+            for piece in _polygon_parts(local_pieces)
+        )
+
+    plans = []
+    for piece in pieces:
+        boundary = _exterior_points(piece)
+        piece_length_axis, piece_width_axis = _axes(boundary)
+        width = max(
+            point[0] * piece_width_axis[0] + point[1] * piece_width_axis[1]
+            for point in boundary
+        ) - min(
+            point[0] * piece_width_axis[0] + point[1] * piece_width_axis[1]
+            for point in boundary
+        )
+        plans.append(
+            _layout_unit(piece, config, "long" if width <= config.panel_width else "short")
+        )
+    first = plans[0]
+    return _LayoutPlan(
+        tuple(panel for plan in plans for panel in plan.panels),
+        first.length_axis,
+        first.width_axis,
+        first.origin,
+        first.length_size,
+        first.width_size,
     )
 
 

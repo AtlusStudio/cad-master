@@ -14,11 +14,11 @@ SYSTEM_PROMPT = """你是洁净室吊顶彩钢板的全局排版规划助手。�
 2. 哪些狭长、承担通行连接的区域是走廊；is_corridor_candidate 必须视为走廊，也可以补充其他走廊；
 3. 每个排版单元应沿长边、短边，还是交给本地算法自动选择方向。
 整体目标是优先增加标准板、减少非标准板和规格种类，并兼顾板材数量与空间利用率。
-groups 必须完整且不重复地包含所有 room_id；只有相邻且连通的房间可以合并。
-所有走廊必须写入 corridor_room_ids，并在 groups 中单独成组，不得与房间合并。
+groups 必须完整且不重复地包含所有非走廊 room_id；只有相邻且连通的房间可以合并。
+所有走廊只写入 corridor_room_ids，不要重复写入 groups，本地程序会自动补成独立排版单元。
 走廊的最终排版方向由本地程序按预设板宽自动决定，模型可将 direction 写为 auto。
 direction 只能是 long、short 或 auto。只返回这种 JSON：
-{"corridor_room_ids":["R0002"],"groups":[{"room_ids":["R0001","R0003"],"direction":"long"},{"room_ids":["R0002"],"direction":"auto"}]}"""
+{"corridor_room_ids":["R0002"],"groups":[{"room_ids":["R0001","R0003"],"direction":"long"}]}"""
 
 
 def validate_ceiling_strategy(
@@ -40,6 +40,15 @@ def validate_ceiling_strategy(
     corridor_ids = set(corridor_ids) | {
         room_id for room_id, room in rooms.items() if room["is_corridor_candidate"]
     }
+
+    def corridor_direction(room_id: str) -> str:
+        return (
+            "long"
+            if rooms[room_id]["estimated_width_mm"]
+            <= payload["ceiling"]["panel_width_mm"]
+            else "short"
+        )
+
     if not isinstance(groups, list) or not groups:
         raise ValueError("AI 吊顶策略必须包含非空 groups 数组")
 
@@ -62,36 +71,40 @@ def validate_ceiling_strategy(
             raise ValueError("AI 吊顶策略包含重复房间")
         if not member_set <= room_ids:
             raise ValueError("AI 吊顶策略包含未知房间")
-        connected = {members[0]}
-        while True:
-            neighbours = {
-                room_id
-                for pair in adjacency
-                if pair & connected
-                for room_id in pair & member_set
-            }
-            if neighbours <= connected:
-                break
-            connected |= neighbours
-        if connected != member_set:
-            raise ValueError("AI 吊顶策略只能合并彼此相邻且连通的房间")
         seen |= member_set
-        if member_set & corridor_ids:
-            members = [[room_id] for room_id in members]
-        else:
-            members = [members]
-        for unit in members:
+        units = []
+        remaining = set(members)
+        while remaining:
+            connected = {next(room_id for room_id in members if room_id in remaining)}
+            while True:
+                neighbours = {
+                    room_id
+                    for pair in adjacency
+                    if pair & connected
+                    for room_id in pair & member_set
+                }
+                if neighbours <= connected:
+                    break
+                connected |= neighbours
+            component = [room_id for room_id in members if room_id in connected]
+            units.extend(
+                [[room_id] for room_id in component]
+                if connected & corridor_ids
+                else [component]
+            )
+            remaining -= connected
+        for unit in units:
             unit_direction = direction
             if unit[0] in corridor_ids:
-                unit_direction = (
-                    "long"
-                    if rooms[unit[0]]["estimated_width_mm"]
-                    <= payload["ceiling"]["panel_width_mm"]
-                    else "short"
-                )
+                unit_direction = corridor_direction(unit[0])
             normalized.append({"room_ids": unit, "direction": unit_direction})
-    if seen != room_ids:
+    missing = room_ids - seen
+    if not missing <= corridor_ids:
         raise ValueError("AI 吊顶策略没有完整覆盖房间")
+    normalized.extend(
+        {"room_ids": [room_id], "direction": corridor_direction(room_id)}
+        for room_id in sorted(missing)
+    )
     return {"corridor_room_ids": sorted(corridor_ids), "groups": normalized}
 
 
